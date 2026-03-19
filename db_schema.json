@@ -1,0 +1,521 @@
+{
+  "analytics": {
+    "pk": "analytics_id",
+    "cols": [
+      "event_type",
+      "event_data",
+      "user_id",
+      "created_at"
+    ]
+  },
+  "api_keys": {
+    "pk": "api_key_id",
+    "cols": [
+      "key_value",
+      "user_id",
+      "description",
+      "created_at",
+      "expires_at",
+      "is_active"
+    ]
+  },
+  "audit_logs": {
+    "pk": "audit_log_id",
+    "cols": [
+      "table_name",
+      "record_id",
+      "action",
+      "old_value",
+      "new_value",
+      "user_id",
+      "created_at"
+    ]
+  },
+  "banners": {
+    "pk": "banner_id",
+    "cols": [
+      "banner_name",
+      "image_url",
+      "target_url",
+      "is_active",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "blog_posts": {
+    "pk": "post_id",
+    "cols": [
+      "post_title",
+      "post_slug",
+      "post_content",
+      "author_id",
+      "meta_title",
+      "meta_description",
+      "meta_keywords",
+      "is_published",
+      "published_at",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "brand": {
+    "pk": "id",
+    "cols": [
+      "name",
+      "slug",
+      "rank",
+      "grouping_type_id",
+      "is_active",
+      "image",
+      "brand_slider_image",
+      "created_at",
+      "updated_at",
+      "products"
+    ]
+  },
+  "cart": {
+    "pk": "cart_id",
+    "cols": [
+      "user_id",
+      "product_id",
+      "quantity",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "categories": {
+    "pk": "category_id",
+    "cols": [
+      "category_name",
+      "slug",
+      "category_description",
+      "image",
+      "thumb_image",
+      "position",
+      "is_active",
+      "seo_title",
+      "seo_description",
+      "seo_content",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "category_relationships": {
+    "pk": "parent_id",
+    "cols": [
+      "position",
+      "created_at"
+    ]
+  },
+  "cms_pages": {
+    "pk": "page_id",
+    "cols": [
+      "page_title",
+      "page_slug",
+      "page_content",
+      "meta_title",
+      "meta_description",
+      "meta_keywords",
+      "is_active",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "comments": {
+    "pk": "comment_id",
+    "cols": [
+      "post_id",
+      "product_id",
+      "user_id",
+      "comment_text",
+      "parent_comment_id",
+      "is_approved",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "coupons": {
+    "pk": "coupon_id",
+    "cols": [
+      "coupon_code",
+      "discount_type",
+      "discount_value",
+      "max_uses",
+      "uses_count",
+      "start_date",
+      "end_date",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "discounts": {
+    "pk": "discount_id",
+    "cols": [
+      "discount_name",
+      "discount_type",
+      "discount_value",
+      "category_id",
+      "product_id",
+      "start_date",
+      "end_date",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "email_queue": {
+    "pk": "email_id",
+    "cols": [
+      "template_id",
+      "recipient_email",
+      "subject",
+      "body",
+      "status",
+      "created_at",
+      "sent_at"
+    ]
+  },
+  "email_templates": {
+    "pk": "template_id",
+    "cols": [
+      "template_name",
+      "subject",
+      "body",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "faqs": {
+    "pk": "faq_id",
+    "cols": [
+      "question",
+      "answer",
+      "category_id",
+      "is_active",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "feedback": {
+    "pk": "feedback_id",
+    "cols": [
+      "user_id",
+      "feedback_text",
+      "rating",
+      "created_at"
+    ]
+  },
+  "logs": {
+    "pk": "log_id",
+    "cols": [
+      "user_id",
+      "action",
+      "action_details",
+      "created_at"
+    ]
+  },
+  "newsletter_subscriptions": {
+    "pk": "subscription_id",
+    "cols": [
+      "email",
+      "subscribed_at",
+      "is_active"
+    ]
+  },
+  "notifications": {
+    "pk": "notification_id",
+    "cols": [
+      "user_id",
+      "message",
+      "is_read",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "order_items": {
+    "pk": "order_item_id",
+    "cols": [
+      "order_id",
+      "product_id",
+      "quantity",
+      "price",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "orders": {
+    "pk": "order_id",
+    "cols": [
+      "user_id",
+      "total_amount",
+      "order_status",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "password_resets": {
+    "pk": "reset_id",
+    "cols": [
+      "user_id",
+      "token",
+      "expires_at",
+      "created_at"
+    ]
+  },
+  "payments": {
+    "pk": "payment_id",
+    "cols": [
+      "order_id",
+      "payment_method",
+      "payment_status",
+      "transaction_id",
+      "amount",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "permissions": {
+    "pk": "permission_id",
+    "cols": [
+      "permission_name",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "post_tags": {
+    "pk": "post_tag_id",
+    "cols": [
+      "post_id",
+      "tag_id",
+      "created_at"
+    ]
+  },
+  "product_categories": {
+    "pk": "product_id",
+    "cols": [
+      "position",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "product_tags": {
+    "pk": "product_tag_id",
+    "cols": [
+      "product_id",
+      "tag_id",
+      "created_at"
+    ]
+  },
+  "products": {
+    "pk": "product_id",
+    "cols": [
+      "product_name",
+      "unit",
+      "slug",
+      "brand_id",
+      "product_description",
+      "old_price",
+      "price",
+      "cost_price",
+      "thumb_image",
+      "stock_quantity",
+      "sku",
+      "parent_sku",
+      "parent_quantity",
+      "parent_sku_pack_discount",
+      "image",
+      "created_at",
+      "updated_at",
+      "is_active",
+      "is_verified",
+      "is_deleted"
+    ]
+  },
+  "promotions": {
+    "pk": "promotion_id",
+    "cols": [
+      "promotion_name",
+      "promotion_description",
+      "discount_id",
+      "start_date",
+      "end_date",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "referrals": {
+    "pk": "referral_id",
+    "cols": [
+      "referrer_id",
+      "referred_email",
+      "referral_code",
+      "is_used",
+      "created_at"
+    ]
+  },
+  "reviews": {
+    "pk": "review_id",
+    "cols": [
+      "product_id",
+      "user_id",
+      "rating",
+      "review_text",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "role_permissions": {
+    "pk": "role_permission_id",
+    "cols": [
+      "role_id",
+      "permission_id",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "sessions": {
+    "pk": "session_id",
+    "cols": [
+      "user_id",
+      "expires_at",
+      "created_at"
+    ]
+  },
+  "settings": {
+    "pk": "setting_id",
+    "cols": [
+      "setting_name",
+      "setting_value",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "shipping_addresses": {
+    "pk": "address_id",
+    "cols": [
+      "user_id",
+      "order_id",
+      "address_line1",
+      "address_line2",
+      "city",
+      "state",
+      "postal_code",
+      "country",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "shipping_methods": {
+    "pk": "shipping_method_id",
+    "cols": [
+      "method_name",
+      "cost",
+      "estimated_delivery_time",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "social_media_links": {
+    "pk": "link_id",
+    "cols": [
+      "platform_name",
+      "url",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "support_tickets": {
+    "pk": "ticket_id",
+    "cols": [
+      "user_id",
+      "subject",
+      "description",
+      "status",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "tags": {
+    "pk": "id",
+    "cols": [
+      "name",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "taxes": {
+    "pk": "tax_id",
+    "cols": [
+      "tax_name",
+      "tax_rate",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "ticket_replies": {
+    "pk": "reply_id",
+    "cols": [
+      "ticket_id",
+      "user_id",
+      "reply_text",
+      "created_at"
+    ]
+  },
+  "user_role_assignments": {
+    "pk": "assignment_id",
+    "cols": [
+      "user_id",
+      "role_id",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "user_roles": {
+    "pk": "role_id",
+    "cols": [
+      "role_name",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "users": {
+    "pk": "user_id",
+    "cols": [
+      "username",
+      "email",
+      "password_hash",
+      "created_at",
+      "updated_at",
+      "is_active"
+    ]
+  },
+  "webhook_logs": {
+    "pk": "log_id",
+    "cols": [
+      "webhook_id",
+      "request_body",
+      "response_body",
+      "status_code",
+      "created_at"
+    ]
+  },
+  "webhooks": {
+    "pk": "webhook_id",
+    "cols": [
+      "url",
+      "event_name",
+      "user_id",
+      "is_active",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "wishlist": {
+    "pk": "wishlist_id",
+    "cols": [
+      "user_id",
+      "product_id",
+      "created_at",
+      "updated_at"
+    ]
+  }
+}
