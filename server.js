@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -8,8 +9,20 @@ const { sequelize } = require('./config/database');
 const { initializeFirebase, getFirebaseInstance } = require('./config/firebase');
 const { initializeFirebaseStorage, isGCSAvailable, uploadToGCS, deleteFromGCS } = require('./services/googleCloudStorage');
 const errorHandler = require('./middleware/errorHandler');
+const indexRoutes = require('./routes/index');
+const authRoutes = require('./routes/auth');
+const productsRoutes = require('./routes/products');
+const categoriesRoutes = require('./routes/categories');
+const uploadRoutes = require('./routes/upload');
+const dashboardRoutes = require('./routes/dashboard');
+const imagesRoutes = require('./routes/images');
+const aiRoutes = require('./routes/ai');
+const backupRoutes = require('./routes/backup');
 const menuRoutes = require('./routes/menu');
 const adminRoutes = require('./routes/admin');
+const springsSiteRoutes = require('./routes/sites/springssite');
+const fairoSiteRoutes = require('./routes/sites/fairosite');
+const grocerSiteRoutes = require('./routes/sites/grocersite');
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '8002', 10);
@@ -106,8 +119,25 @@ app.get('/api/v1', (req, res) => {
   res.json({ message: 'Grocery CMS API', version: '1.0' });
 });
 
+// API v1 routes (from api folder)
+app.use('/', indexRoutes);
+app.use('/auth', authRoutes);
+app.use('/products', productsRoutes);
+app.use('/categories', categoriesRoutes);
+app.use('/upload', uploadRoutes);
+app.use('/dashboard', dashboardRoutes);
+app.use('/images', imagesRoutes);
+app.use('/ai', aiRoutes);
+app.use('/api', backupRoutes);
+app.use('/springs', springsSiteRoutes);
+app.use('/fairo', fairoSiteRoutes);
+app.use('/grocers', grocerSiteRoutes);
+
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/admin', adminRoutes);
+
+// Static uploads (if using local uploads)
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 app.use('*', (req, res) => res.status(404).json({ success: false, error: 'Not found' }));
 app.use(errorHandler);
