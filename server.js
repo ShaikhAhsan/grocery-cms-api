@@ -12,10 +12,13 @@ require('dotenv').config({
   override: process.env.DOTENV_NO_OVERRIDE !== '1',
 });
 
-const { resolveMysqlConnectHost } = require('./config/mysqlHost');
+const { resolveMysqlHost, resolveMysqlConnectHost } = require('./config/mysqlHost');
 
 (async () => {
   try {
+    if (!process.env.DB_LOGICAL_MYSQL_HOST) {
+      process.env.DB_LOGICAL_MYSQL_HOST = resolveMysqlHost();
+    }
     if (!process.env.DB_RESOLVED_IPV4) {
       process.env.DB_RESOLVED_IPV4 = await resolveMysqlConnectHost();
     }

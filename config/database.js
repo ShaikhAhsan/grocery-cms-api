@@ -9,18 +9,22 @@ require('dotenv').config({
   override: process.env.DOTENV_NO_OVERRIDE !== '1',
 });
 
-const logicalHost = resolveMysqlHost();
+const logicalHost = process.env.DB_LOGICAL_MYSQL_HOST || resolveMysqlHost();
 const dbHost = process.env.DB_RESOLVED_IPV4 || logicalHost;
 const dbPort = parseInt(process.env.DB_PORT || '3306', 10);
 const dbSsl = process.env.DB_SSL === 'true';
 
 if (process.env.DB_RESOLVED_IPV4 && process.env.DB_RESOLVED_IPV4 !== logicalHost) {
   console.log(
-    `[DB] Sequelize host=${dbHost} port=${dbPort} ssl=${dbSsl} (logical name: ${logicalHost})`
+    `[DB] Sequelize host=${dbHost} port=${dbPort} ssl=${dbSsl} (TLS servername=${logicalHost})`
   );
 } else {
   console.log(`[DB] Sequelize host=${dbHost} port=${dbPort} ssl=${dbSsl}`);
 }
+
+const sslOptions = dbSsl
+  ? { rejectUnauthorized: false, servername: logicalHost }
+  : false;
 
 const sequelize = new Sequelize(
   process.env.DB_NAME || 'grocery_store_db',
@@ -35,7 +39,7 @@ const sequelize = new Sequelize(
     define: { timestamps: true, underscored: true, freezeTableName: true },
     timezone: '+05:00',
     dialectOptions: {
-      ssl: dbSsl ? { rejectUnauthorized: false } : false,
+      ssl: sslOptions,
     },
     dialectModule: require('mysql2'),
   }

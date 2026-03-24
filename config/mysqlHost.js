@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const dns = require('dns');
 
 const apiRoot = path.join(__dirname, '..');
 
@@ -43,6 +44,19 @@ function isPoisonedMysqlHost(dbHost) {
 
 function isIpv4Literal(host) {
   return /^(\d{1,3}\.){3}\d{1,3}$/.test((host || '').trim());
+}
+
+function isLoopbackIp(ip) {
+  if (!ip || typeof ip !== 'string') return true;
+  return ip.startsWith('127.') || ip === '0.0.0.0';
+}
+
+function publicDnsServers() {
+  const raw = process.env.DB_DNS_SERVERS || '8.8.8.8,1.1.1.1';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -97,7 +111,22 @@ function resolveMysqlHost() {
   return dbHost;
 }
 
-/** TCP host for mysql2: IPv4 from public DNS when possible (skips /etc/hosts). */
+function pickConnectIp(ips) {
+  if (!ips || !ips.length) return null;
+  const ok = ips.find((ip) => !isLoopbackIp(ip));
+  return ok || null;
+}
+
+async function resolve4WithServers(hostname, usePublicDns) {
+  const { promises } = dns;
+  if (usePublicDns) {
+    const r = new promises.Resolver();
+    r.setServers(publicDnsServers());
+    return r.resolve4(hostname);
+  }
+  return promises.resolve4(hostname);
+}
+
 async function resolveMysqlConnectHost() {
   const logical = resolveMysqlHost();
 
@@ -109,17 +138,85 @@ async function resolveMysqlConnectHost() {
 
   if (skipDns) return logical;
 
-  try {
-    const dns = require('dns').promises;
-    const ips = await dns.resolve4(logical);
-    if (ips && ips[0]) {
-      console.log(
-        `[DB] Using ${ips[0]} for MySQL (DNS A record for "${logical}"; avoids /etc/hosts → 127.0.1.1 on same VPS as Hostinger)`
-      );
-      return ips[0];
+  for (const usePublic of [false, true]) {
+    try {
+      const ips = await resolve4WithServers(logical, usePublic);
+      const ip = pickConnectIp(ips);
+      if (ip) {
+        console.log(
+          `[DB] Using ${ip} for MySQL (DNS${usePublic ? ' via DB_DNS_SERVERS' : ''} for "${logical}"; avoids /etc/hosts → 127.0.1.1)`
+        );
+        return ip;
+      }
+      if (ips && ips.length) {
+        console.warn(`[DB] DNS returned only loopback for "${logical}", retrying with public DNS…`);
+      }
+    } catch (e) {
+      if (!usePublic) {
+        console.warn(`[DB] dns.resolve4("${logical}") failed, retrying public DNS:`, e.message);
+      } else {
+        console.warn(`[DB] dns.resolve4("${logical}") failed, using hostname:`, e.message);
+      }
     }
-  } catch (e) {
-    console.warn(`[DB] dns.resolve4("${logical}") failed, using hostname:`, e.message);
+  }
+
+  return logical;
+}
+
+/**
+ * Same as async resolve but blocking — needed if the process entrypoint is app.js (skips server.js).
+ */
+function resolveMysqlConnectHostSync() {
+  const logical = resolveMysqlHost();
+
+  const skipDns =
+    process.env.DB_SKIP_DNS_RESOLVE === '1' ||
+    process.env.DB_USE_LOCAL_MYSQL === '1' ||
+    process.env.DB_USE_LOCAL_MYSQL === 'true' ||
+    isIpv4Literal(logical);
+
+  if (skipDns) return logical;
+
+  const { execFileSync } = require('child_process');
+  const hostJson = JSON.stringify(logical);
+  const serversJson = JSON.stringify(publicDnsServers());
+
+  const scriptSystem = `
+    require('dns').promises.resolve4(${hostJson})
+      .then((ips) => {
+        const ok = (ips || []).find((i) => !i.startsWith('127.'));
+        console.log(ok || '');
+      })
+      .catch(() => console.log(''));
+  `;
+  const scriptPublic = `
+    const r = new (require('dns').promises.Resolver)();
+    r.setServers(${serversJson});
+    r.resolve4(${hostJson})
+      .then((ips) => {
+        const ok = (ips || []).find((i) => !i.startsWith('127.'));
+        console.log(ok || '');
+      })
+      .catch(() => console.log(''));
+  `;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const script = attempt === 0 ? scriptSystem : scriptPublic;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], {
+        encoding: 'utf8',
+        timeout: 20000,
+        maxBuffer: 64,
+      }).trim();
+      if (/^(\d{1,3}\.){3}\d{1,3}$/.test(out) && !isLoopbackIp(out)) {
+        console.log(
+          `[DB] (sync) Using ${out} for MySQL — DNS${attempt === 1 ? ' (public resolvers)' : ''} for "${logical}"`
+        );
+        return out;
+      }
+    } catch (e) {
+      console.warn('[DB] sync DNS attempt failed:', e.message);
+    }
   }
 
   return logical;
@@ -128,6 +225,7 @@ async function resolveMysqlConnectHost() {
 module.exports = {
   resolveMysqlHost,
   resolveMysqlConnectHost,
+  resolveMysqlConnectHostSync,
   isIpv4Literal,
   isPoisonedMysqlHost,
   readDbHostFromEnvFiles,

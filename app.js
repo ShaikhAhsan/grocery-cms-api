@@ -1,5 +1,19 @@
-const express = require('express');
 const path = require('path');
+require('dotenv').config({
+  path: path.join(__dirname, '.env'),
+  override: process.env.DOTENV_NO_OVERRIDE !== '1',
+});
+
+// Coolify sometimes runs `node app.js` (not server.js). Resolve MySQL IP here too (/etc/hosts bypass).
+const mysqlHost = require('./config/mysqlHost');
+if (!process.env.DB_LOGICAL_MYSQL_HOST) {
+  process.env.DB_LOGICAL_MYSQL_HOST = mysqlHost.resolveMysqlHost();
+}
+if (!process.env.DB_RESOLVED_IPV4) {
+  process.env.DB_RESOLVED_IPV4 = mysqlHost.resolveMysqlConnectHostSync();
+}
+
+const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
