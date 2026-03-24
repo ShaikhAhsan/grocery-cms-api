@@ -3,7 +3,11 @@ const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Coolify/Docker often set DB_HOST=localhost before Node starts; override lets .env win (opt out: DOTENV_NO_OVERRIDE=1)
+require('dotenv').config({
+  path: path.join(__dirname, '.env'),
+  override: process.env.DOTENV_NO_OVERRIDE !== '1',
+});
 
 const { sequelize } = require('./config/database');
 const { initializeFirebase, getFirebaseInstance } = require('./config/firebase');
