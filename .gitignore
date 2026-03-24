@@ -3,8 +3,8 @@ node_modules/
 
 # Environment & secrets — never commit
 .env
+.env.example
 .env.*
-!.env.example
 
 # Firebase / GCP service account keys (use .env.example + docs)
 firebase-service-account.json
