@@ -1,5 +1,6 @@
+const path = require('path');
 const { Sequelize } = require('sequelize');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 let dbHost = process.env.DB_HOST || 'srv1149167.hstgr.cloud';
 if (process.env.DB_FORCE_HOST) dbHost = process.env.DB_FORCE_HOST;

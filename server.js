@@ -3,11 +3,11 @@ const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { sequelize } = require('./config/database');
 const { initializeFirebase, getFirebaseInstance } = require('./config/firebase');
-const { initializeFirebaseStorage, isGCSAvailable, uploadToGCS, deleteFromGCS } = require('./services/googleCloudStorage');
+const { initializeFirebaseStorage, runStorageHealthCheck } = require('./services/googleCloudStorage');
 const errorHandler = require('./middleware/errorHandler');
 const indexRoutes = require('./routes/index');
 const authRoutes = require('./routes/auth');
@@ -25,7 +25,7 @@ const fairoSiteRoutes = require('./routes/sites/fairosite');
 const grocerSiteRoutes = require('./routes/sites/grocersite');
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '8002', 10);
+const PORT = parseInt(process.env.PORT || '8005', 10);
 
 app.use(helmet());
 app.use(cors({
@@ -56,27 +56,25 @@ app.get('/health', async (req, res) => {
     checks.db = { ok: false, message: err.message || 'Connection failed' };
   }
 
-  // 2. Firebase (Auth/Firestore)
+  // 2. Firebase Admin — OAuth token (same path as Firestore/Storage; avoids Firestore-not-created / gRPC issues)
   try {
-    const { db } = getFirebaseInstance();
-    await db.collection('_health_check').limit(1).get();
+    const { admin } = getFirebaseInstance();
+    const cred = admin.app().options.credential;
+    if (!cred || typeof cred.getAccessToken !== 'function') {
+      throw new Error('Firebase app has no credential');
+    }
+    await cred.getAccessToken();
     checks.firebase = { ok: true, message: 'Connected successfully' };
   } catch (err) {
     checks.firebase = { ok: false, message: err.message || 'Not initialized or connection failed' };
   }
 
-  // 3. Firebase Storage - test upload
-  if (isGCSAvailable()) {
-    try {
-      const minimalPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQwAADgAEA4T3bKQAAAABJRU5ErkJggg==', 'base64');
-      const result = await uploadToGCS(minimalPng, 'health-check-test.png', 'health-check', 'image/png');
-      checks.firebaseStorage = { ok: true, message: 'Upload test passed' };
-      try { await deleteFromGCS(result.fileName); } catch { /* cleanup */ }
-    } catch (err) {
-      checks.firebaseStorage = { ok: false, message: err.message || 'Upload test failed' };
-    }
-  } else {
-    checks.firebaseStorage = { ok: false, message: 'Firebase Storage not configured' };
+  // 3. Firebase Storage — write + delete only (no makePublic; works with uniform bucket-level access)
+  try {
+    await runStorageHealthCheck();
+    checks.firebaseStorage = { ok: true, message: 'Upload test passed' };
+  } catch (err) {
+    checks.firebaseStorage = { ok: false, message: err.message || 'Upload test failed' };
   }
 
   const allOk = checks.db.ok && checks.firebase.ok && checks.firebaseStorage.ok;
@@ -106,7 +104,7 @@ h1{color:#111}h2{font-size:1rem;color:#666;margin-top:2rem}
 <p>Status: <strong>${status}</strong> &bull; Uptime: ${Math.floor(process.uptime())}s</p>
 <h2>Database (MySQL)</h2>
 <div class="item"><span class="status ${checks.db.ok ? 'ok' : 'fail'}">${checks.db.ok ? '✓ Connected' : '✗ Failed'}</span><span>${checks.db.message}</span></div>
-<h2>Firebase (Auth/Firestore)</h2>
+<h2>Firebase Admin (credentials)</h2>
 <div class="item"><span class="status ${checks.firebase.ok ? 'ok' : 'fail'}">${checks.firebase.ok ? '✓ Connected' : '✗ Failed'}</span><span>${checks.firebase.message}</span></div>
 <h2>Firebase Storage</h2>
 <div class="item"><span class="status ${checks.firebaseStorage.ok ? 'ok' : 'fail'}">${checks.firebaseStorage.ok ? '✓ Working' : '✗ Failed'}</span><span>${checks.firebaseStorage.message}</span></div>

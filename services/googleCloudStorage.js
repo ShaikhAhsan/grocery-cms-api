@@ -10,7 +10,10 @@ let bucket = null;
 const initializeFirebaseStorage = () => {
   try {
     if (!admin.apps.length) return false;
-    const bucketName = process.env.FIREBASE_STORAGE_BUCKET || 'taqdeem-7a621.firebasestorage.app';
+    const projectId = admin.app().options.projectId;
+    const bucketName =
+      process.env.FIREBASE_STORAGE_BUCKET ||
+      (projectId ? `${projectId}.firebasestorage.app` : 'taqdeem-7a621.firebasestorage.app');
     bucket = admin.storage().bucket(bucketName);
     return true;
   } catch (error) {
@@ -36,6 +39,19 @@ const uploadToGCS = async (fileBuffer, fileName, folder = 'health-check', conten
   return { fileName: uniqueFileName, url: publicUrl };
 };
 
+/** Minimal write+delete without makePublic (uniform bucket-level access forbids object ACLs). */
+const runStorageHealthCheck = async () => {
+  if (!admin.apps.length) throw new Error('Firebase not initialized');
+  const b = admin.storage().bucket();
+  const uniqueFileName = `health-check/${uuidv4()}-${Date.now()}.txt`;
+  const file = b.file(uniqueFileName);
+  await file.save(Buffer.from('ok'), {
+    metadata: { contentType: 'text/plain' },
+    resumable: false,
+  });
+  await file.delete({ ignoreNotFound: true });
+};
+
 const deleteFromGCS = async (fileName) => {
   if (!isGCSAvailable()) return;
   await bucket.file(fileName).delete();
@@ -46,4 +62,5 @@ module.exports = {
   isGCSAvailable,
   uploadToGCS,
   deleteFromGCS,
+  runStorageHealthCheck,
 };
