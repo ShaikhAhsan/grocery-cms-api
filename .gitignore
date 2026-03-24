@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Environment & secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Firebase / GCP service account keys (use .env.example + docs)
+firebase-service-account.json
+*-firebase-adminsdk*.json
+*.pem
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Uploads / local data (if created)
+uploads/
