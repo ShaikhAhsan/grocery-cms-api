@@ -3,22 +3,31 @@
  * Run database migrations
  * Usage: node scripts/runMigrations.js
  */
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({
+  path: path.join(__dirname, '..', '.env'),
+  override: process.env.DOTENV_NO_OVERRIDE !== '1',
+});
+
 const mysql = require('mysql2/promise');
 const fs = require('fs');
-const path = require('path');
+const { resolveMysqlConnectHost } = require('../config/mysqlHost');
 
-const dbConfig = {
-  host: process.env.DB_HOST || 'srv1149167.hstgr.cloud',
-  port: parseInt(process.env.DB_PORT || '3306', 10),
-  user: process.env.DB_USER || 'grocery_store_api_user',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'grocery_store_db',
-  multipleStatements: true,
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-};
+async function buildDbConfig() {
+  const host = await resolveMysqlConnectHost();
+  return {
+    host,
+    port: parseInt(process.env.DB_PORT || '3306', 10),
+    user: process.env.DB_USER || 'grocery_store_api_user',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'grocery_store_db',
+    multipleStatements: true,
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  };
+}
 
 async function runMigrations() {
+  const dbConfig = await buildDbConfig();
   console.log(`\n🔌 Connecting to ${dbConfig.host}:${dbConfig.port}/${dbConfig.database}...`);
 
   const connection = await mysql.createConnection(dbConfig);
