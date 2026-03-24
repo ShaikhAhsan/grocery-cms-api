@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "migrate": "node scripts/runMigrations.js",
     "seed": "node scripts/seedMenu.js",
-    "verify-firebase": "node scripts/verifyFirebaseKey.js"
+    "verify-firebase": "node scripts/verifyFirebaseKey.js",
+    "test:sync-products": "node scripts/testSyncProducts.js"
   },
   "dependencies": {
     "axios": "^1.13.6",

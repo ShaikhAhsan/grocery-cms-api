@@ -25,6 +25,7 @@ const errorHandler = require('./middleware/errorHandler');
 const indexRoutes = require('./routes/index');
 const authRoutes = require('./routes/auth');
 const productsRoutes = require('./routes/products');
+const { handleSyncProductsPhp } = productsRoutes;
 const categoriesRoutes = require('./routes/categories');
 const uploadRoutes = require('./routes/upload');
 const dashboardRoutes = require('./routes/dashboard');
@@ -49,6 +50,29 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Before any app.use('/', …) so POST /sync_products is never swallowed by another router
+app.all(
+  '/sync_products',
+  (req, res, next) => {
+    if (req.method !== 'POST') {
+      return res.status(200).json({ success: false, message: 'Only POST method allowed.' });
+    }
+    next();
+  },
+  handleSyncProductsPhp
+);
+// PHP-style path (some clients/proxies keep the .php suffix)
+app.all(
+  '/sync_products.php',
+  (req, res, next) => {
+    if (req.method !== 'POST') {
+      return res.status(200).json({ success: false, message: 'Only POST method allowed.' });
+    }
+    next();
+  },
+  handleSyncProductsPhp
+);
 
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
@@ -130,6 +154,8 @@ app.get('/api/v1', (req, res) => {
 app.use('/', indexRoutes);
 app.use('/auth', authRoutes);
 app.use('/products', productsRoutes);
+// Same router: clients often use /api/products (legacy Node API / proxies)
+app.use('/api/products', productsRoutes);
 app.use('/categories', categoriesRoutes);
 app.use('/upload', uploadRoutes);
 app.use('/dashboard', dashboardRoutes);

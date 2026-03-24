@@ -2,12 +2,156 @@
  * Products API - CRUD, search, sync, filters
  */
 const express = require('express');
+const axios = require('axios');
 const { sequelize } = require('../config/database');
 const { QueryTypes } = require('sequelize');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 const { processImageUrl } = require('../utils/helpers');
 
 const router = express.Router();
+
+function syncParentSkusUrl() {
+  const fromEnv = (process.env.SYNC_PARENT_SKUS_URL || '').trim();
+  if (fromEnv) return fromEnv;
+  const port = parseInt(process.env.PORT || '8005', 10);
+  return `http://127.0.0.1:${port}/products/sync-parent-skus`;
+}
+
+/** PHP empty() for sku: skip null, '', 0, '0', false, []. */
+function isEmptySkuForSync(sku) {
+  if (sku == null || sku === false) return true;
+  if (Array.isArray(sku) && sku.length === 0) return true;
+  if (sku === 0 || sku === '0') return true;
+  if (typeof sku === 'string' && sku.trim() === '') return true;
+  return false;
+}
+
+function formatDecimal2(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '0.00';
+  return x.toFixed(2);
+}
+
+/** POST local `/products/sync-parent-skus` after bulk sync (replaces external Sheen URL). */
+async function callLocalSyncParentSkus() {
+  const url = syncParentSkusUrl();
+  try {
+    const res = await axios.post(url, {}, {
+      headers: { 'Content-Type': 'application/json' },
+      validateStatus: () => true,
+      timeout: 120000,
+    });
+    const decoded = res.data && typeof res.data === 'object' ? res.data : {};
+    return {
+      statusCode: res.status,
+      message: decoded.message ?? 'No message received',
+      success: Boolean(decoded.success),
+    };
+  } catch (e) {
+    return {
+      statusCode: 0,
+      message: e.message || 'No message received',
+      success: false,
+    };
+  }
+}
+
+/** Parity with sync_products.php: upsert product_name, price, cost_price, stock_quantity, sku + local parent-SKU sync (no category_id). */
+async function handleSyncProductsPhp(req, res) {
+  try {
+    const { products } = req.body || {};
+    if (!Array.isArray(products)) {
+      return res.status(200).json({
+        success: false,
+        message: 'Products array is required.',
+      });
+    }
+
+    const stats = { total: 0, new: 0, updated: 0, unchanged: 0 };
+    const upsertSql = `
+      INSERT INTO products (product_name, price, cost_price, stock_quantity, sku)
+      VALUES (?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        product_name = VALUES(product_name),
+        price = CASE WHEN ? > 0 THEN ? ELSE price END,
+        cost_price = CASE WHEN ? > 0 THEN ? ELSE cost_price END,
+        stock_quantity = CASE WHEN ? >= 0 THEN ? ELSE stock_quantity END
+    `;
+
+    await sequelize.transaction(async (transaction) => {
+      for (const product of products) {
+        const sku = product?.sku;
+        if (isEmptySkuForSync(sku)) continue;
+
+        stats.total += 1;
+
+        const productName = product.product_name ?? null;
+        const priceStr = formatDecimal2(product.price ?? 0);
+        const costStr = formatDecimal2(product.cost_price ?? 0);
+        const stockRaw = product.stock_quantity ?? 0;
+        const stockNum = Number(stockRaw);
+        const stockVal = Number.isFinite(stockNum) ? stockNum : 0;
+
+        const priceNum = parseFloat(priceStr);
+        const costNum = parseFloat(costStr);
+
+        // Sequelize MySQL: INSERT returns [insertId, affectedRows], not [OkPacket]
+        const [, affectedRows] = await sequelize.query(upsertSql, {
+          replacements: [
+            productName,
+            priceStr,
+            costStr,
+            stockVal,
+            sku,
+            priceNum,
+            priceNum,
+            costNum,
+            costNum,
+            stockVal,
+            stockVal,
+          ],
+          transaction,
+        });
+
+        const ar = typeof affectedRows === 'number' ? affectedRows : 0;
+        if (ar === 1) stats.new += 1;
+        else if (ar === 2) stats.updated += 1;
+        else if (ar === 0) stats.unchanged += 1;
+      }
+    });
+
+    const parentSkusSync = await callLocalSyncParentSkus();
+
+    const syncPayload = {
+      statusCode: parentSkusSync.statusCode,
+      message: parentSkusSync.message,
+      success: parentSkusSync.success,
+    };
+    return res.status(200).json({
+      success: true,
+      total_products: stats.total,
+      updated: stats.updated,
+      new: stats.new,
+      unchanged: stats.unchanged,
+      parent_skus_sync: syncPayload,
+      sheen_sync: syncPayload,
+    });
+  } catch (err) {
+    return res.status(200).json({
+      success: false,
+      message: `Sync failed: ${err.message}`,
+    });
+  }
+}
+
+// sync_products.php — register before /:id and patch /:id so this path is never treated as an id
+router.all('/sync_products', (req, res, next) => {
+  if (req.method !== 'POST') {
+    return res.status(200).json({ success: false, message: 'Only POST method allowed.' });
+  }
+  next();
+});
+router.post('/sync_products', handleSyncProductsPhp);
 
 router.patch('/:id', async (req, res) => {
   try {
@@ -33,7 +177,7 @@ router.patch('/:id', async (req, res) => {
       { replacements: values }
     );
 
-    const [products] = await sequelize.query(
+    const products = await sequelize.query(
       'SELECT * FROM products WHERE product_id = ?',
       { type: QueryTypes.SELECT, replacements: [id] }
     );
@@ -88,7 +232,7 @@ router.get('/all', async (req, res) => {
 
 router.get('/sku/:sku', async (req, res) => {
   try {
-    const [products] = await sequelize.query(
+    const products = await sequelize.query(
       'SELECT * FROM products WHERE sku = ?',
       { type: QueryTypes.SELECT, replacements: [req.params.sku] }
     );
@@ -116,8 +260,8 @@ router.post('/', async (req, res) => {
         replacements: [product_name, product_description || null, brand_id || null, price, cost_price, stock_quantity || 0, sku || null, image || null],
       }
     );
-    const [rows] = await sequelize.query('SELECT LAST_INSERT_ID() as id', { type: QueryTypes.SELECT });
-    successResponse(res, { product_id: rows[0]?.id }, 'Product created successfully', 201);
+    const insRows = await sequelize.query('SELECT LAST_INSERT_ID() as id', { type: QueryTypes.SELECT });
+    successResponse(res, { product_id: insRows[0]?.id }, 'Product created successfully', 201);
   } catch (err) {
     errorResponse(res, err.message);
   }
@@ -267,13 +411,15 @@ router.post('/upsert', async (req, res) => {
     if (product_id != null) vals.unshift(product_id);
     query += ` ON DUPLICATE KEY UPDATE ${updateList}`;
 
-    const [result] = await sequelize.query(query, { replacements: vals });
-    const insertId = result?.insertId ?? product_id;
+    const [lastInsertId, affectedRows] = await sequelize.query(query, { replacements: vals });
+    const ar = typeof affectedRows === 'number' ? affectedRows : 0;
+    const insertId =
+      typeof lastInsertId === 'number' && lastInsertId > 0 ? lastInsertId : product_id;
 
     successResponse(res, {
       product_id: insertId,
-      affected_rows: result?.affectedRows ?? 1,
-    }, result?.affectedRows === 1 ? 'Product created successfully' : 'Product updated successfully');
+      affected_rows: ar,
+    }, ar === 1 ? 'Product created successfully' : ar === 2 ? 'Product updated successfully' : 'Product saved');
   } catch (err) {
     errorResponse(res, err.message);
   }
@@ -288,12 +434,12 @@ router.post('/sync', async (req, res) => {
 
     for (const p of products) {
       const { product_name, price, cost_price, stock_quantity, sku } = p;
-      const [existing] = await sequelize.query(
+      const existingRows = await sequelize.query(
         'SELECT product_id FROM products WHERE sku = ?',
         { type: QueryTypes.SELECT, replacements: [sku] }
       );
 
-      if (existing.length > 0) {
+      if (existingRows.length > 0) {
         await sequelize.query(
           'UPDATE products SET price = ?, cost_price = ?, stock_quantity = ? WHERE sku = ?',
           { replacements: [price, cost_price, stock_quantity, sku] }
@@ -323,13 +469,13 @@ router.post('/sync-parent-skus', async (req, res) => {
       const { product_id, parent_sku, parent_quantity, parent_sku_pack_discount } = parent;
       if (!parent_sku || !parent_quantity) continue;
 
-      const [child] = await sequelize.query(
+      const childRows = await sequelize.query(
         'SELECT price, cost_price, stock_quantity FROM products WHERE sku = ? LIMIT 1',
         { type: QueryTypes.SELECT, replacements: [parent_sku] }
       );
-      if (child.length === 0) continue;
+      if (childRows.length === 0) continue;
 
-      const c = child[0];
+      const c = childRows[0];
       const newStock = Math.floor((c.stock_quantity || 0) / parent_quantity);
       const newPrice = (c.price || 0) * parent_quantity - (parent_sku_pack_discount || 0);
       const newCostPrice = (c.cost_price || 0) * parent_quantity;
@@ -434,3 +580,4 @@ router.get('/', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.handleSyncProductsPhp = handleSyncProductsPhp;
