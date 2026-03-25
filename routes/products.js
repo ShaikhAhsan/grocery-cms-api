@@ -9,6 +9,15 @@ const { successResponse, errorResponse } = require('../utils/responseHandler');
 const { processImageUrl } = require('../utils/helpers');
 
 const router = express.Router();
+const requireSheenInventoryJwt = require('../middleware/requireSheenInventoryJwt');
+
+/** Bulk list ?allproducts=true — inventory sync only (requires app JWT). */
+function requireSheenInventoryJwtForBulkList(req, res, next) {
+  const ap = String(req.query.allproducts || '').toLowerCase().trim();
+  const allProducts = ap === 'true' || ap === '1' || ap === 'yes';
+  if (!allProducts) return next();
+  return requireSheenInventoryJwt(req, res, next);
+}
 
 function syncParentSkusUrl() {
   const fromEnv = (process.env.SYNC_PARENT_SKUS_URL || '').trim();
@@ -189,7 +198,7 @@ router.all('/sync_products', (req, res, next) => {
 });
 router.post('/sync_products', handleSyncProductsPhp);
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireSheenInventoryJwt, async (req, res) => {
   try {
     const { id } = req.params;
     const { product_name, price, is_active, is_deleted, is_verified } = req.body;
@@ -233,7 +242,7 @@ router.patch('/:id', async (req, res) => {
 });
 
 // GET /products/all - fetch all products (optional ?limit= & ?offset=)
-router.get('/all', async (req, res) => {
+router.get('/all', requireSheenInventoryJwt, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 5000, 10000);
     const offset = parseInt(req.query.offset, 10) || 0;
@@ -404,7 +413,7 @@ router.get('/search', async (req, res) => {
 });
 
 /** Latest bulk POST /sync_products run; optional ?last_seen_at= ISO — for Flutter “stale” indicator */
-router.get('/sync_products/status', async (req, res) => {
+router.get('/sync_products/status', requireSheenInventoryJwt, async (req, res) => {
   try {
     const rows = await sequelize.query(
       `SELECT id, synced_at, total_records, new_count, updated_count, unchanged_count
@@ -581,7 +590,7 @@ router.post('/sync-parent-skus', async (req, res) => {
 });
 
 // GET / - filtered, sorted, paginated products (use allproducts=true to return all)
-router.get('/', async (req, res) => {
+router.get('/', requireSheenInventoryJwtForBulkList, async (req, res) => {
   try {
     const q = req.query;
     const ap = String(q.allproducts || '').toLowerCase().trim();

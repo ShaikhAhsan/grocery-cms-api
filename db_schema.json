@@ -517,5 +517,18 @@
       "created_at",
       "updated_at"
     ]
+  },
+  "sheen_inventory_access": {
+    "pk": "id",
+    "cols": [
+      "firebase_uid",
+      "email",
+      "display_name",
+      "status",
+      "requested_at",
+      "reviewed_at",
+      "reviewed_by",
+      "notes"
+    ]
   }
 }

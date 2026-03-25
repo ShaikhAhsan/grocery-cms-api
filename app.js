@@ -23,6 +23,7 @@ const { initializeFirebase, getFirebaseInstance } = require('./config/firebase')
 const { initializeFirebaseStorage, runStorageHealthCheck } = require('./services/googleCloudStorage');
 const errorHandler = require('./middleware/errorHandler');
 const indexRoutes = require('./routes/index');
+const inventoryAuthRoutes = require('./routes/inventoryAuth');
 const authRoutes = require('./routes/auth');
 const productsRoutes = require('./routes/products');
 const { handleSyncProductsPhp } = productsRoutes;
@@ -152,6 +153,7 @@ app.get('/api/v1', (req, res) => {
 });
 
 app.use('/', indexRoutes);
+app.use('/inventory/auth', inventoryAuthRoutes);
 app.use('/auth', authRoutes);
 app.use('/products', productsRoutes);
 // Same router: clients often use /api/products (legacy Node API / proxies)
