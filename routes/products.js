@@ -32,6 +32,40 @@ function formatDecimal2(n) {
   return x.toFixed(2);
 }
 
+async function insertProductSyncLog(stats, req) {
+  try {
+    const rawIp = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString();
+    const ip = rawIp.split(',')[0].trim().slice(0, 45) || null;
+    const [newId] = await sequelize.query(
+      `INSERT INTO product_sync_logs (total_records, new_count, updated_count, unchanged_count, client_ip)
+       VALUES (?, ?, ?, ?, ?)`,
+      {
+        replacements: [stats.total, stats.new, stats.updated, stats.unchanged, ip],
+      }
+    );
+    const idNum = typeof newId === 'number' ? newId : 0;
+    if (!idNum) return null;
+    const rows = await sequelize.query(
+      'SELECT id, synced_at, total_records, new_count, updated_count, unchanged_count FROM product_sync_logs WHERE id = ?',
+      { type: QueryTypes.SELECT, replacements: [idNum] }
+    );
+    const row = rows[0];
+    if (!row) return null;
+    const syncedAt = row.synced_at;
+    return {
+      id: row.id,
+      synced_at: syncedAt instanceof Date ? syncedAt.toISOString() : String(syncedAt),
+      total_records: row.total_records,
+      new_count: row.new_count,
+      updated_count: row.updated_count,
+      unchanged_count: row.unchanged_count,
+    };
+  } catch (e) {
+    console.warn('[sync_products] product_sync_logs (run migration 016 if missing):', e.message);
+    return null;
+  }
+}
+
 /** POST local `/products/sync-parent-skus` after bulk sync (replaces external Sheen URL). */
 async function callLocalSyncParentSkus() {
   const url = syncParentSkusUrl();
@@ -120,6 +154,7 @@ async function handleSyncProductsPhp(req, res) {
       }
     });
 
+    const syncLog = await insertProductSyncLog(stats, req);
     const parentSkusSync = await callLocalSyncParentSkus();
 
     const syncPayload = {
@@ -133,6 +168,7 @@ async function handleSyncProductsPhp(req, res) {
       updated: stats.updated,
       new: stats.new,
       unchanged: stats.unchanged,
+      sync_log: syncLog,
       parent_skus_sync: syncPayload,
       sheen_sync: syncPayload,
     });
@@ -364,6 +400,59 @@ router.get('/search', async (req, res) => {
     }, 'Search results fetched successfully');
   } catch (err) {
     errorResponse(res, err.message);
+  }
+});
+
+/** Latest bulk POST /sync_products run; optional ?last_seen_at= ISO — for Flutter “stale” indicator */
+router.get('/sync_products/status', async (req, res) => {
+  try {
+    const rows = await sequelize.query(
+      `SELECT id, synced_at, total_records, new_count, updated_count, unchanged_count
+       FROM product_sync_logs ORDER BY id DESC LIMIT 1`,
+      { type: QueryTypes.SELECT }
+    );
+    const last = rows[0] || null;
+    const clientSeen = (req.query.last_seen_at || req.query.last_seen || '').toString().trim();
+
+    let lastSync = null;
+    if (last) {
+      const st = last.synced_at;
+      lastSync = {
+        id: last.id,
+        synced_at: st instanceof Date ? st.toISOString() : String(st),
+        total_records: last.total_records,
+        new_count: last.new_count,
+        updated_count: last.updated_count,
+        unchanged_count: last.unchanged_count,
+      };
+    }
+
+    let serverHasNewerThanClient = false;
+    if (lastSync) {
+      if (!clientSeen) {
+        serverHasNewerThanClient = true;
+      } else {
+        const serverT = new Date(lastSync.synced_at).getTime();
+        const clientT = new Date(clientSeen).getTime();
+        serverHasNewerThanClient = Number.isFinite(serverT) && Number.isFinite(clientT) && serverT > clientT;
+      }
+    }
+
+    res.json({
+      success: true,
+      last_sync: lastSync,
+      has_sync_history: Boolean(lastSync),
+      client_reported_last_seen_at: clientSeen || null,
+      server_has_newer_sync_than_client: serverHasNewerThanClient,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: err.message || 'Failed to read sync status',
+      last_sync: null,
+      has_sync_history: false,
+      server_has_newer_sync_than_client: false,
+    });
   }
 });
 
