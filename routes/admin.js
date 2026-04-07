@@ -75,6 +75,111 @@ const uploadMicroserviceBase = (
   process.env.UPLOAD_MICROSERVICE_URL || 'http://109.106.244.241:9007'
 ).replace(/\/$/, '');
 
+const MAX_FETCH_IMAGE_BYTES = 15 * 1024 * 1024;
+
+function assertFetchableImageUrl(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) throw new Error('URL is required');
+  let u;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    throw new Error('Invalid URL');
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('Only http and https URLs are allowed');
+  }
+  const host = u.hostname.toLowerCase();
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '0.0.0.0' ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    host === '[::1]'
+  ) {
+    throw new Error('That URL is not allowed');
+  }
+  return u.toString();
+}
+
+function sniffImageMime(buf) {
+  if (!buf || buf.length < 12) return null;
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
+  if (b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
+  return null;
+}
+
+/**
+ * Download a remote image for CMS "paste URL" import (POST /import/image-from-url).
+ * Path avoids clashing with auto-mounted CRUD (e.g. a table slug /fetch-image-from-url).
+ */
+router.post('/import/image-from-url', async (req, res) => {
+  try {
+    const href = assertFetchableImageUrl(req.body?.url);
+    const response = await axios.get(href, {
+      responseType: 'arraybuffer',
+      timeout: 45000,
+      maxContentLength: MAX_FETCH_IMAGE_BYTES,
+      maxBodyLength: MAX_FETCH_IMAGE_BYTES,
+      validateStatus: (s) => s >= 200 && s < 300,
+      headers: { Accept: 'image/*,*/*;q=0.8' },
+    });
+    const buf = Buffer.from(response.data);
+    if (buf.length === 0) {
+      return res.status(400).json({ success: false, error: 'Empty response from URL' });
+    }
+    if (buf.length > MAX_FETCH_IMAGE_BYTES) {
+      return res.status(400).json({ success: false, error: 'Image is too large' });
+    }
+    const headerCt = String(response.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const sniffed = sniffImageMime(buf);
+    const contentType =
+      headerCt && headerCt.startsWith('image/') ? headerCt : sniffed || null;
+    if (!contentType || !contentType.startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        error: 'URL did not return a recognizable image (jpeg, png, gif, or webp)',
+      });
+    }
+    const ext =
+      contentType === 'image/png'
+        ? 'png'
+        : contentType === 'image/gif'
+          ? 'gif'
+          : contentType === 'image/webp'
+            ? 'webp'
+            : 'jpg';
+    const base64 = buf.toString('base64');
+    return res.json({
+      success: true,
+      data: {
+        base64,
+        contentType,
+        suggestedFileName: `from-url-${Date.now()}.${ext}`,
+      },
+    });
+  } catch (err) {
+    const status = err.response?.status;
+    if (status === 404) {
+      return res.status(400).json({ success: false, error: 'Image not found (404)' });
+    }
+    const msg =
+      err.code === 'ENOTFOUND' || err.code === 'EAI_AGAIN'
+        ? 'Could not resolve host'
+        : err.code === 'ETIMEDOUT' || err.code === 'ECONNABORTED'
+          ? 'Request timed out'
+          : err.message || 'Failed to download image';
+    return res.status(400).json({ success: false, error: msg });
+  }
+});
+
 const api = (table, cols, idCol = 'id') => ({
   list: async (req, res) => {
     try {

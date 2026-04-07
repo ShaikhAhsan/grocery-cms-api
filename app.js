@@ -163,13 +163,14 @@ app.use('/upload', uploadRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/images', imagesRoutes);
 app.use('/ai', aiRoutes);
-app.use('/api', backupRoutes);
 app.use('/springs', springsSiteRoutes);
 app.use('/fairo', fairoSiteRoutes);
 app.use('/grocers', grocerSiteRoutes);
 
+/** Register specific /api/v1/* routers before the broader /api mount (backup, etc.). */
 app.use('/api/v1/menu', menuRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api', backupRoutes);
 
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
