@@ -268,6 +268,41 @@ const api = (table, cols, idCol = 'id') => ({
   },
   delete: async (req, res) => {
     try {
+      if (cols.includes('is_deleted')) {
+        const [existing] = await sequelize.query(
+          `SELECT \`is_deleted\` FROM \`${table}\` WHERE \`${idCol}\` = :pkId`,
+          { type: QueryTypes.SELECT, replacements: { pkId: req.params.id } }
+        );
+        if (!existing) {
+          return res.status(404).json({ success: false, error: 'Not found' });
+        }
+        const del = existing.is_deleted;
+        const currentlyDeleted =
+          del === 1 || del === true || String(del) === '1' || Number(del) === 1;
+        const nextFlag = currentlyDeleted ? 0 : 1;
+        const setParts = ['`is_deleted` = :nextFlag'];
+        if (cols.includes('updated_at')) {
+          setParts.push('`updated_at` = CURRENT_TIMESTAMP');
+        }
+        const [r] = await sequelize.query(
+          `UPDATE \`${table}\` SET ${setParts.join(', ')} WHERE \`${idCol}\` = :pkId`,
+          { replacements: { nextFlag, pkId: req.params.id } }
+        );
+        if (r.affectedRows === 0) {
+          return res.status(404).json({ success: false, error: 'Not found' });
+        }
+        const [row] = await sequelize.query(
+          `SELECT * FROM \`${table}\` WHERE \`${idCol}\` = :pkId`,
+          { type: QueryTypes.SELECT, replacements: { pkId: req.params.id } }
+        );
+        return res.json({
+          success: true,
+          soft: true,
+          restored: currentlyDeleted,
+          deleted: !currentlyDeleted,
+          data: row,
+        });
+      }
       const [r] = await sequelize.query(
         `DELETE FROM \`${table}\` WHERE \`${idCol}\` = :pkId`,
         { replacements: { pkId: req.params.id } }
@@ -288,6 +323,137 @@ const mount = (path, table, cols, idCol = 'id') => {
   router.put(`${path}/:id`, a.update);
   router.delete(`${path}/:id`, a.delete);
 };
+
+/**
+ * Attach nested `brand` + `categories[]` to plain product row(s) from `products`.
+ */
+async function categoriesByProductIds(productIds) {
+  const ids = [...new Set((productIds || []).map((x) => Number(x)).filter((n) => !Number.isNaN(n)))];
+  if (!ids.length) return new Map();
+  const ph = ids.map(() => '?').join(',');
+  const rows = await sequelize.query(
+    `SELECT pc.product_id, c.category_id, c.category_name, c.slug, c.image, pc.position
+     FROM product_categories pc
+     INNER JOIN categories c ON c.category_id = pc.category_id
+     WHERE pc.product_id IN (${ph})
+     ORDER BY pc.product_id, pc.position ASC, c.category_name ASC`,
+    { type: QueryTypes.SELECT, replacements: ids }
+  );
+  const map = new Map();
+  for (const row of rows) {
+    const pid = Number(row.product_id);
+    if (!map.has(pid)) map.set(pid, []);
+    map.get(pid).push({
+      category_id: row.category_id,
+      category_name: row.category_name,
+      slug: row.slug,
+      image: row.image,
+    });
+  }
+  return map;
+}
+
+async function tagsByProductIds(productIds) {
+  const ids = [...new Set((productIds || []).map((x) => Number(x)).filter((n) => !Number.isNaN(n)))];
+  if (!ids.length) return new Map();
+  const ph = ids.map(() => '?').join(',');
+  const rows = await sequelize.query(
+    `SELECT pt.product_id, t.id AS tag_id, t.name
+     FROM \`product_tags\` pt
+     INNER JOIN \`tags\` t ON t.id = pt.tag_id
+     WHERE pt.product_id IN (${ph})
+     ORDER BY pt.product_id, t.name ASC`,
+    { type: QueryTypes.SELECT, replacements: ids }
+  );
+  const map = new Map();
+  for (const row of rows) {
+    const pid = Number(row.product_id);
+    if (!map.has(pid)) map.set(pid, []);
+    map.get(pid).push({
+      id: row.tag_id,
+      name: row.name,
+    });
+  }
+  return map;
+}
+
+function shapeProductRow(p, catMap, tagMap) {
+  const { _brand_name: brandName, _brand_slug: brandSlug, _brand_image: brandImage, ...rest } = p;
+  const brand =
+    rest.brand_id != null
+      ? {
+          id: rest.brand_id,
+          name: brandName ?? null,
+          slug: brandSlug ?? null,
+          image: brandImage ?? null,
+        }
+      : null;
+  const pid = Number(rest.product_id);
+  return {
+    ...rest,
+    brand,
+    categories: catMap.get(pid) || [],
+    tags: tagMap.get(pid) || [],
+  };
+}
+
+async function productsListEnriched(req, res) {
+  try {
+    const { limit = 500, offset = 0 } = req.query;
+    const where = req.query.where ? ` WHERE ${req.query.where}` : '';
+    const order = req.query.orderBy ? ` ORDER BY ${req.query.orderBy}` : ' ORDER BY p.product_id';
+    const rows = await sequelize.query(
+      `SELECT p.*, b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image
+       FROM products p
+       LEFT JOIN brand b ON b.id = p.brand_id
+       ${where}${order}
+       LIMIT :limit OFFSET :offset`,
+      { type: QueryTypes.SELECT, replacements: { limit: parseInt(limit, 10), offset: parseInt(offset, 10) } }
+    );
+    const [countRow] = await sequelize.query(`SELECT COUNT(*) as c FROM products${where}`, {
+      type: QueryTypes.SELECT,
+    });
+    const pids = rows.map((r) => r.product_id);
+    const [catMap, tagMap] = await Promise.all([
+      categoriesByProductIds(pids),
+      tagsByProductIds(pids),
+    ]);
+    const data = rows.map((row) => shapeProductRow(row, catMap, tagMap));
+    res.json({ success: true, data, total: countRow?.c ?? 0 });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+async function productsGetEnriched(req, res) {
+  try {
+    const [row] = await sequelize.query(
+      `SELECT p.*, b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image
+       FROM products p
+       LEFT JOIN brand b ON b.id = p.brand_id
+       WHERE p.product_id = :pkId`,
+      { type: QueryTypes.SELECT, replacements: { pkId: req.params.id } }
+    );
+    if (!row) return res.status(404).json({ success: false, error: 'Not found' });
+    const pid = row.product_id;
+    const [catMap, tagMap] = await Promise.all([
+      categoriesByProductIds([pid]),
+      tagsByProductIds([pid]),
+    ]);
+    res.json({ success: true, data: shapeProductRow(row, catMap, tagMap) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+function mountProducts(path, table, cols, idCol) {
+  const a = api(table, cols, idCol);
+  router.get(path, productsListEnriched);
+  router.get(`${path}/:id`, productsGetEnriched);
+  router.post(path, a.create);
+  router.put(`${path}/:id`, a.update);
+  router.delete(`${path}/:id`, a.delete);
+}
 
 /**
  * Active products for a brand (non-deleted). Dedicated path avoids any clash with /brand/:id.
@@ -368,11 +534,125 @@ router.post('/upload-microservice', uploadMemory.single('image'), async (req, re
   }
 });
 
+/**
+ * Product ↔ categories (junction). GET list for editor; PUT replaces all links for a product.
+ * Registered before generic CRUD /products/:id. If clients get 404 here, the API process needs a
+ * restart (stale server) — a live handler always returns { success: true, data: [...] } (possibly empty).
+ */
+router.get('/products/:productId/category-links', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId, 10);
+    if (Number.isNaN(productId)) {
+      return res.status(400).json({ success: false, error: 'Invalid product id' });
+    }
+    const rows = await sequelize.query(
+      `SELECT pc.category_id, c.category_name, c.slug, c.image
+       FROM product_categories pc
+       INNER JOIN categories c ON c.category_id = pc.category_id
+       WHERE pc.product_id = :productId
+       ORDER BY pc.position ASC, c.category_name ASC`,
+      { type: QueryTypes.SELECT, replacements: { productId } }
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put('/products/:productId/category-links', async (req, res) => {
+  const productId = parseInt(req.params.productId, 10);
+  if (Number.isNaN(productId)) {
+    return res.status(400).json({ success: false, error: 'Invalid product id' });
+  }
+  const raw = req.body?.category_ids;
+  const categoryIds = Array.isArray(raw)
+    ? [...new Set(raw.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n)))]
+    : [];
+  let t = null;
+  try {
+    t = await sequelize.transaction();
+    await sequelize.query(`DELETE FROM product_categories WHERE product_id = :productId`, {
+      transaction: t,
+      replacements: { productId },
+    });
+    for (let i = 0; i < categoryIds.length; i += 1) {
+      await sequelize.query(
+        `INSERT INTO product_categories (category_id, product_id, position) VALUES (:cid, :pid, :pos)`,
+        { transaction: t, replacements: { cid: categoryIds[i], pid: productId, pos: i + 1 } }
+      );
+    }
+    await t.commit();
+    t = null;
+    res.json({ success: true });
+  } catch (err) {
+    if (t) await t.rollback();
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Product ↔ tags (junction table product_tags). GET for editor; PUT replaces all links.
+ */
+router.get('/products/:productId/tag-links', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId, 10);
+    if (Number.isNaN(productId)) {
+      return res.status(400).json({ success: false, error: 'Invalid product id' });
+    }
+    const rows = await sequelize.query(
+      `SELECT t.id, t.name
+       FROM \`product_tags\` pt
+       INNER JOIN \`tags\` t ON t.id = pt.tag_id
+       WHERE pt.product_id = :productId
+       ORDER BY t.name ASC`,
+      { type: QueryTypes.SELECT, replacements: { productId } }
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put('/products/:productId/tag-links', async (req, res) => {
+  const productId = parseInt(req.params.productId, 10);
+  if (Number.isNaN(productId)) {
+    return res.status(400).json({ success: false, error: 'Invalid product id' });
+  }
+  const raw = req.body?.tag_ids;
+  const tagIds = Array.isArray(raw)
+    ? [...new Set(raw.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n)))]
+    : [];
+  let t = null;
+  try {
+    t = await sequelize.transaction();
+    await sequelize.query(`DELETE FROM \`product_tags\` WHERE product_id = :productId`, {
+      transaction: t,
+      replacements: { productId },
+    });
+    for (let i = 0; i < tagIds.length; i += 1) {
+      await sequelize.query(
+        `INSERT INTO \`product_tags\` (product_id, tag_id, created_at) VALUES (:pid, :tid, NOW())`,
+        { transaction: t, replacements: { pid: productId, tid: tagIds[i] } }
+      );
+    }
+    await t.commit();
+    t = null;
+    res.json({ success: true });
+  } catch (err) {
+    if (t) await t.rollback();
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Mount CRUD for all tables from schema (excludes backup_categories, backup_products, audit_logs)
 Object.entries(schema).forEach(([table, { pk, cols }]) => {
   if (table === 'audit_logs') return; // read-only below
   const path = '/' + table.replace(/_/g, '-');
-  mount(path, table, cols, pk);
+  if (table === 'products') {
+    mountProducts(path, table, cols, pk);
+  } else {
+    mount(path, table, cols, pk);
+  }
 });
 
 // Audit logs - read-only (no create/update/delete)
