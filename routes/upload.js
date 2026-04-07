@@ -1,5 +1,6 @@
 /**
- * Upload routes - image upload for products/categories
+ * Upload routes — POST /upload (multipart) for product/category images (updates DB).
+ * Brand images use the external microservice / upload-microservice proxy, not this file.
  */
 const express = require('express');
 const multer = require('multer');
