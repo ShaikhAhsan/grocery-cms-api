@@ -387,6 +387,68 @@ function productListOrderClause(query) {
   return ` ORDER BY ${col} ${dir}, p.product_id ASC`;
 }
 
+const PRODUCT_SEARCH_MAX_TOKENS = 8;
+const PRODUCT_SEARCH_MAX_TOKEN_LEN = 64;
+
+/** Escape LIKE wildcards in user tokens (MySQL default escape \). */
+function escapeSqlLikeFragment(str) {
+  return String(str)
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
+}
+
+/**
+ * q / search: whitespace = AND of tokens; each token matches if ANY column matches (LIKE %token%).
+ * All values are bound — no string concatenation of user input into SQL.
+ * @returns {{ sql: string, replacements: any[] }}
+ */
+function buildProductSearchClause(rawQuery) {
+  const raw = String(rawQuery ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!raw) return { sql: '', replacements: [] };
+
+  const tokens = raw
+    .split(' ')
+    .map((t) => t.slice(0, PRODUCT_SEARCH_MAX_TOKEN_LEN))
+    .filter((t) => t.length > 0)
+    .slice(0, PRODUCT_SEARCH_MAX_TOKENS);
+
+  if (tokens.length === 0) return { sql: '', replacements: [] };
+
+  const orCols = [
+    'p.product_name',
+    'p.sku',
+    'p.slug',
+    'p.unit',
+    'p.parent_sku',
+    'CAST(p.product_id AS CHAR)',
+    'CAST(p.brand_id AS CHAR)',
+    'CAST(p.price AS CHAR)',
+    'CAST(p.old_price AS CHAR)',
+    'CAST(p.cost_price AS CHAR)',
+    'CAST(p.stock_quantity AS CHAR)',
+    'b.name',
+    'b.slug',
+    'p.product_description',
+  ];
+
+  const replacements = [];
+  const andGroups = [];
+
+  for (const token of tokens) {
+    const pat = `%${escapeSqlLikeFragment(token)}%`;
+    const orParts = orCols.map((col) => `${col} LIKE ?`);
+    andGroups.push(`(${orParts.join(' OR ')})`);
+    for (let i = 0; i < orCols.length; i += 1) {
+      replacements.push(pat);
+    }
+  }
+
+  return { sql: andGroups.join(' AND '), replacements };
+}
+
 async function categoriesByProductIds(productIds) {
   const ids = [...new Set((productIds || []).map((x) => Number(x)).filter((n) => !Number.isNaN(n)))];
   if (!ids.length) return new Map();
@@ -463,19 +525,33 @@ async function productsListEnriched(req, res) {
     const offsetRaw = req.query.offset != null ? parseInt(req.query.offset, 10) : 0;
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 20;
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
-    const where = req.query.where ? ` WHERE ${req.query.where}` : '';
+    const searchRaw = req.query.q != null ? req.query.q : req.query.search;
+    const { sql: searchSql, replacements: searchReps } = buildProductSearchClause(searchRaw);
+    const legacyWhere = req.query.where ? String(req.query.where).trim() : '';
+
+    let whereSql = '';
+    if (legacyWhere && searchSql) {
+      whereSql = ` WHERE (${legacyWhere}) AND (${searchSql})`;
+    } else if (legacyWhere) {
+      whereSql = ` WHERE (${legacyWhere})`;
+    } else if (searchSql) {
+      whereSql = ` WHERE ${searchSql}`;
+    }
+
     const order = productListOrderClause(req.query);
+    const fromJoin = 'FROM products p LEFT JOIN brand b ON b.id = p.brand_id';
+
     const rows = await sequelize.query(
       `SELECT p.*, b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image
-       FROM products p
-       LEFT JOIN brand b ON b.id = p.brand_id
-       ${where}${order}
-       LIMIT :limit OFFSET :offset`,
-      { type: QueryTypes.SELECT, replacements: { limit, offset } }
+       ${fromJoin}
+       ${whereSql}${order}
+       LIMIT ? OFFSET ?`,
+      { type: QueryTypes.SELECT, replacements: [...searchReps, limit, offset] }
     );
-    const [countRow] = await sequelize.query(`SELECT COUNT(*) as c FROM products p${where}`, {
-      type: QueryTypes.SELECT,
-    });
+    const [countRow] = await sequelize.query(
+      `SELECT COUNT(DISTINCT p.product_id) AS c ${fromJoin} ${whereSql}`,
+      { type: QueryTypes.SELECT, replacements: [...searchReps] }
+    );
     const pids = rows.map((r) => r.product_id);
     const [catMap, tagMap] = await Promise.all([
       categoriesByProductIds(pids),
@@ -703,6 +779,82 @@ router.put('/products/:productId/tag-links', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     if (t) await t.rollback();
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Update only product `image` and/or `thumb_image` (no other columns).
+ * PATCH /api/v1/admin/products/:productId/images
+ * Body (JSON): at least one of:
+ *   - image: string | null — main image URL/path (empty string → null)
+ *   - thumb_image: string | null
+ *   - thumb: string | null — alias for thumb_image (if both sent, thumb_image wins)
+ * Omitted keys are left unchanged.
+ */
+function normalizeNullableUrlField(v) {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
+}
+
+router.patch('/products/:productId/images', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId, 10);
+    if (Number.isNaN(productId)) {
+      return res.status(400).json({ success: false, error: 'Invalid product id' });
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const image = normalizeNullableUrlField(body.image);
+    const thumbFromBody =
+      body.thumb_image !== undefined ? body.thumb_image : body.thumb;
+    const thumb_image = normalizeNullableUrlField(thumbFromBody);
+
+    if (image === undefined && thumb_image === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Provide at least one of: image, thumb_image, thumb',
+      });
+    }
+
+    const sets = [];
+    const replacements = { productId };
+    if (image !== undefined) {
+      sets.push('`image` = :image');
+      replacements.image = image;
+    }
+    if (thumb_image !== undefined) {
+      sets.push('`thumb_image` = :thumb_image');
+      replacements.thumb_image = thumb_image;
+    }
+
+    const [meta] = await sequelize.query(
+      `UPDATE products SET ${sets.join(', ')} WHERE product_id = :productId`,
+      { replacements }
+    );
+
+    const affected = meta && typeof meta.affectedRows === 'number' ? meta.affectedRows : 0;
+    if (affected === 0) {
+      return res.status(404).json({ success: false, error: 'Product not found' });
+    }
+
+    const [row] = await sequelize.query(
+      `SELECT product_id, image, thumb_image, image_updated_at FROM products WHERE product_id = :productId`,
+      { type: QueryTypes.SELECT, replacements: { productId } }
+    );
+
+    res.json({
+      success: true,
+      data: {
+        product_id: row.product_id,
+        image: row.image ?? null,
+        thumb_image: row.thumb_image ?? null,
+        image_updated_at: row.image_updated_at ?? null,
+      },
+    });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
