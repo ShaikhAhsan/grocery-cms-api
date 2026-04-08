@@ -528,6 +528,7 @@
       "email",
       "display_name",
       "status",
+      "is_cost_price_visible",
       "requested_at",
       "reviewed_at",
       "reviewed_by",

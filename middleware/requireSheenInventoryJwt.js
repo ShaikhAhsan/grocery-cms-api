@@ -40,7 +40,8 @@ async function requireSheenInventoryJwt(req, res, next) {
     }
 
     const rows = await sequelize.query(
-      `SELECT id, email, display_name, status FROM sheen_inventory_access WHERE firebase_uid = ?`,
+      `SELECT id, email, display_name, status, is_cost_price_visible
+       FROM sheen_inventory_access WHERE firebase_uid = ?`,
       { type: QueryTypes.SELECT, replacements: [payload.sub] }
     );
     const row = rows[0];
@@ -61,6 +62,7 @@ async function requireSheenInventoryJwt(req, res, next) {
       accessId: row.id,
       email: row.email,
       displayName: row.display_name,
+      isCostPriceVisible: !!Number(row.is_cost_price_visible),
     };
     return next();
   } catch (e) {

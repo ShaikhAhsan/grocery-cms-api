@@ -117,12 +117,15 @@ router.post('/session', async (req, res) => {
       });
     }
 
+    const isCostPriceVisible = !!Number(row.is_cost_price_visible);
+
     const accessToken = jwt.sign(
       {
         purpose: 'sheen_inventory',
         sub: uid,
         email: row.email,
         accessId: row.id,
+        isCostPriceVisible,
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
@@ -136,6 +139,7 @@ router.post('/session', async (req, res) => {
         firebaseUid: uid,
         email: row.email,
         displayName: row.display_name,
+        isCostPriceVisible,
       },
       status: 'approved',
     });
@@ -172,7 +176,8 @@ router.get('/me', async (req, res) => {
     }
 
     const rows = await sequelize.query(
-      `SELECT id, firebase_uid, email, display_name, status, requested_at, reviewed_at
+      `SELECT id, firebase_uid, email, display_name, status, is_cost_price_visible,
+              requested_at, reviewed_at
        FROM sheen_inventory_access WHERE firebase_uid = ?`,
       { type: QueryTypes.SELECT, replacements: [payload.sub] }
     );
@@ -196,12 +201,15 @@ router.get('/me', async (req, res) => {
       });
     }
 
+    const isCostPriceVisible = !!Number(row.is_cost_price_visible);
+
     return res.json({
       success: true,
       user: {
         firebaseUid: row.firebase_uid,
         email: row.email,
         displayName: row.display_name,
+        isCostPriceVisible,
       },
       status: 'approved',
     });
