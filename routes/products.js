@@ -99,7 +99,12 @@ async function callLocalSyncParentSkus() {
   }
 }
 
-/** Parity with sync_products.php: upsert product_name, price, cost_price, stock_quantity, sku + local parent-SKU sync (no category_id). */
+/**
+ * Bulk upsert by sku: insert sets product_name, price, cost_price, stock_quantity;
+ * on duplicate, product_name is left unchanged; if incoming price is strictly higher than
+ * current price (and > 0), old_price <- current price and price <- incoming; cost_price
+ * and stock_quantity follow the same CASE rules as before.
+ */
 async function handleSyncProductsPhp(req, res) {
   try {
     const { products } = req.body || {};
@@ -111,12 +116,21 @@ async function handleSyncProductsPhp(req, res) {
     }
 
     const stats = { total: 0, new: 0, updated: 0, unchanged: 0 };
+    // VALUES(col) = proposed insert; bare col = existing row (MySQL/MariaDB ON DUPLICATE KEY UPDATE)
     const upsertSql = `
       INSERT INTO products (product_name, price, cost_price, stock_quantity, sku)
       VALUES (?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
-        product_name = VALUES(product_name),
-        price = CASE WHEN ? > 0 THEN ? ELSE price END,
+        old_price = IF(
+          VALUES(price) > COALESCE(price, 0) AND VALUES(price) > 0,
+          price,
+          old_price
+        ),
+        price = IF(
+          VALUES(price) > COALESCE(price, 0) AND VALUES(price) > 0,
+          VALUES(price),
+          price
+        ),
         cost_price = CASE WHEN ? > 0 THEN ? ELSE cost_price END,
         stock_quantity = CASE WHEN ? >= 0 THEN ? ELSE stock_quantity END
     `;
@@ -135,7 +149,6 @@ async function handleSyncProductsPhp(req, res) {
         const stockNum = Number(stockRaw);
         const stockVal = Number.isFinite(stockNum) ? stockNum : 0;
 
-        const priceNum = parseFloat(priceStr);
         const costNum = parseFloat(costStr);
 
         // Sequelize MySQL: INSERT returns [insertId, affectedRows], not [OkPacket]
@@ -146,8 +159,6 @@ async function handleSyncProductsPhp(req, res) {
             costStr,
             stockVal,
             sku,
-            priceNum,
-            priceNum,
             costNum,
             costNum,
             stockVal,
