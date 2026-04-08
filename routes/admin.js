@@ -368,6 +368,25 @@ const mount = (path, table, cols, idCol = 'id') => {
 /**
  * Attach nested `brand` + `categories[]` to plain product row(s) from `products`.
  */
+/** Whitelisted ORDER BY for GET /products (avoids raw orderBy injection). */
+const PRODUCT_LIST_SORT_SQL = {
+  product_name: 'p.product_name',
+  image_updated_at: 'p.image_updated_at',
+  unit: 'p.unit',
+  brand: 'b.name',
+  old_price: 'p.old_price',
+  price: 'p.price',
+};
+
+function productListOrderClause(query) {
+  const sort = String(query.sort || '').trim().toLowerCase();
+  const orderRaw = String(query.order || 'asc').trim().toLowerCase();
+  const dir = orderRaw === 'desc' ? 'DESC' : 'ASC';
+  const col = PRODUCT_LIST_SORT_SQL[sort];
+  if (!col) return ' ORDER BY p.product_id ASC';
+  return ` ORDER BY ${col} ${dir}, p.product_id ASC`;
+}
+
 async function categoriesByProductIds(productIds) {
   const ids = [...new Set((productIds || []).map((x) => Number(x)).filter((n) => !Number.isNaN(n)))];
   if (!ids.length) return new Map();
@@ -440,18 +459,21 @@ function shapeProductRow(p, catMap, tagMap) {
 
 async function productsListEnriched(req, res) {
   try {
-    const { limit = 500, offset = 0 } = req.query;
+    const limitRaw = req.query.limit != null ? parseInt(req.query.limit, 10) : 20;
+    const offsetRaw = req.query.offset != null ? parseInt(req.query.offset, 10) : 0;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 20;
+    const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
     const where = req.query.where ? ` WHERE ${req.query.where}` : '';
-    const order = req.query.orderBy ? ` ORDER BY ${req.query.orderBy}` : ' ORDER BY p.product_id';
+    const order = productListOrderClause(req.query);
     const rows = await sequelize.query(
       `SELECT p.*, b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image
        FROM products p
        LEFT JOIN brand b ON b.id = p.brand_id
        ${where}${order}
        LIMIT :limit OFFSET :offset`,
-      { type: QueryTypes.SELECT, replacements: { limit: parseInt(limit, 10), offset: parseInt(offset, 10) } }
+      { type: QueryTypes.SELECT, replacements: { limit, offset } }
     );
-    const [countRow] = await sequelize.query(`SELECT COUNT(*) as c FROM products${where}`, {
+    const [countRow] = await sequelize.query(`SELECT COUNT(*) as c FROM products p${where}`, {
       type: QueryTypes.SELECT,
     });
     const pids = rows.map((r) => r.product_id);
