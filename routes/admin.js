@@ -54,6 +54,14 @@ function duplicateKeyMeta(err, table) {
 }
 
 function respondWriteError(err, res, table) {
+  if (err.duplicateField) {
+    return res.status(409).json({
+      success: false,
+      error: err.message || 'This value already exists.',
+      code: 'DUPLICATE_ENTRY',
+      duplicateField: err.duplicateField,
+    });
+  }
   if (isDuplicateKeyError(err)) {
     const { userMessage, duplicateField } = duplicateKeyMeta(err, table);
     return res.status(409).json({
@@ -64,6 +72,33 @@ function respondWriteError(err, res, table) {
     });
   }
   return res.status(500).json({ success: false, error: err.message });
+}
+
+/**
+ * Enforce unique `slug` among non-deleted rows (if `is_deleted` exists), excluding one primary key (for updates).
+ */
+async function assertSlugUnique(table, cols, idCol, slugValue, excludePkId) {
+  if (!cols.includes('slug')) return;
+  if (slugValue == null) return;
+  const slug = String(slugValue).trim();
+  if (slug === '') return;
+
+  const parts = ['`slug` = :slug'];
+  const replacements = { slug };
+  if (excludePkId != null && String(excludePkId).length > 0) {
+    parts.push(`\`${idCol}\` != :excludePk`);
+    replacements.excludePk = excludePkId;
+  }
+  if (cols.includes('is_deleted')) {
+    parts.push('(`is_deleted` = 0 OR `is_deleted` IS NULL)');
+  }
+  const sql = `SELECT \`${idCol}\` FROM \`${table}\` WHERE ${parts.join(' AND ')} LIMIT 1`;
+  const [row] = await sequelize.query(sql, { type: QueryTypes.SELECT, replacements });
+  if (row) {
+    const err = new Error('This slug is already in use.');
+    err.duplicateField = 'slug';
+    throw err;
+  }
 }
 
 const uploadMemory = multer({
@@ -218,6 +253,9 @@ const api = (table, cols, idCol = 'id') => ({
       if (keys.length === 0) {
         return res.status(400).json({ success: false, error: 'No valid fields to insert' });
       }
+      if (keys.includes('slug')) {
+        await assertSlugUnique(table, cols, idCol, body.slug, null);
+      }
       const colList = keys.map((k) => `\`${k}\``).join(', ');
       const valList = keys.map((k) => `:${k}`).join(', ');
       await sequelize.query(
@@ -251,6 +289,9 @@ const api = (table, cols, idCol = 'id') => ({
           { type: QueryTypes.SELECT, replacements: { pkId: req.params.id } }
         );
         return res.json({ success: true, data: row });
+      }
+      if (keys.includes('slug')) {
+        await assertSlugUnique(table, cols, idCol, body.slug, req.params.id);
       }
       const setClause = keys.map((k) => `\`${k}\` = :${k}`).join(', ');
       await sequelize.query(
