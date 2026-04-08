@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
+const { parseIsCostPriceVisible } = require('../utils/parseIsCostPriceVisible');
 
 const JWT_SECRET =
   process.env.SHEEN_INVENTORY_JWT_SECRET ||
@@ -62,7 +63,7 @@ async function requireSheenInventoryJwt(req, res, next) {
       accessId: row.id,
       email: row.email,
       displayName: row.display_name,
-      isCostPriceVisible: !!Number(row.is_cost_price_visible),
+      isCostPriceVisible: parseIsCostPriceVisible(row.is_cost_price_visible),
     };
     return next();
   } catch (e) {

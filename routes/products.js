@@ -11,12 +11,138 @@ const { processImageUrl } = require('../utils/helpers');
 const router = express.Router();
 const requireSheenInventoryJwt = require('../middleware/requireSheenInventoryJwt');
 
-/** Bulk list ?allproducts=true — inventory sync only (requires app JWT). */
+/** Express can surface duplicate keys as `string[]`; treat any element as true. */
+function isQueryFlagTrue(v) {
+  if (v == null || v === '') return false;
+  if (Array.isArray(v)) return v.some((x) => isQueryFlagTrue(x));
+  const s = String(v).toLowerCase().trim();
+  return s === 'true' || s === '1' || s === 'yes' || s === 'on';
+}
+
+/** Same as `WHERE minimum_qty > 0` — COALESCE so NULL is treated like 0. */
+const MIN_QTY_ACTIVE_SQL = 'COALESCE(p.minimum_qty, 0) > 0';
+
+/** Bulk list ?allproducts=true — or minimum-qty filters (Sheen Inventory) — requires app JWT. */
 function requireSheenInventoryJwtForBulkList(req, res, next) {
-  const ap = String(req.query.allproducts || '').toLowerCase().trim();
-  const allProducts = ap === 'true' || ap === '1' || ap === 'yes';
-  if (!allProducts) return next();
+  const q = req.query || {};
+  const allProducts = isQueryFlagTrue(q.allproducts);
+  const hasMinimumQty = isQueryFlagTrue(q.has_minimum_qty);
+  const belowMinimum = isQueryFlagTrue(q.below_minimum);
+  if (!allProducts && !hasMinimumQty && !belowMinimum) return next();
   return requireSheenInventoryJwt(req, res, next);
+}
+
+/** GET /products — paginated list (`?has_minimum_qty=true` limits to rows where minimum_qty > 0). */
+async function handleProductList(req, res) {
+  try {
+    const q = req.query;
+    const allProducts = isQueryFlagTrue(q.allproducts);
+    const pageNum = allProducts ? 1 : Math.max(1, parseInt(q.page) || 1);
+    const limitNum = allProducts ? 50000 : Math.max(1, Math.min(parseInt(q.limit) || 10, 500));
+    const PRODUCT_LIST_ORDER_SQL = {
+      product_name: 'p.product_name',
+      price: 'p.price',
+      sku: 'p.sku',
+      created_at: 'p.created_at',
+      updated_at: 'p.updated_at',
+      stock_quantity: 'p.stock_quantity',
+      minimum_qty: 'p.minimum_qty',
+      is_active: 'p.is_active',
+      is_verified: 'p.is_verified',
+      parent_sku: 'p.parent_sku',
+      parent_quantity: 'p.parent_quantity',
+      parent_sku_pack_discount: 'p.parent_sku_pack_discount',
+      is_deleted: 'p.is_deleted',
+      /** Lowest first = most urgent when minimum_qty > 0 */
+      stock_vs_minimum_ratio: '(p.stock_quantity / NULLIF(p.minimum_qty, 0))',
+    };
+    const sortKeyRaw = String(q.sort_by || '').trim();
+    const sortKey = PRODUCT_LIST_ORDER_SQL[sortKeyRaw] ? sortKeyRaw : 'product_name';
+    const sortSql = PRODUCT_LIST_ORDER_SQL[sortKey];
+    const sortOrder = ['ASC', 'DESC'].includes((q.sort_order || '').toUpperCase()) ? q.sort_order.toUpperCase() : 'ASC';
+
+    let baseQuery = 'SELECT p.* FROM products p WHERE 1=1';
+    const params = [];
+
+    if (q.exclude_category) {
+      baseQuery += ` AND p.product_id NOT IN (SELECT product_id FROM product_categories WHERE category_id = ?)`;
+      params.push(q.exclude_category);
+    }
+    if (q.category) {
+      baseQuery += ` AND p.product_id IN (SELECT product_id FROM product_categories WHERE category_id = ?)`;
+      params.push(q.category);
+    }
+    if (q.sku) {
+      const normalizedSku = (q.sku || '').replace(/^0+/, '');
+      baseQuery += ' AND (p.sku LIKE ? OR p.sku = ?)';
+      params.push(normalizedSku.includes('%') ? normalizedSku : normalizedSku, q.sku);
+    }
+    if (q.parent_sku) { baseQuery += ' AND p.parent_sku = ?'; params.push(q.parent_sku); }
+    if (q.name) { baseQuery += ' AND p.product_name LIKE ?'; params.push(`%${q.name}%`); }
+    if (q.min_price) { baseQuery += ' AND p.price >= ?'; params.push(q.min_price); }
+    if (q.max_price) { baseQuery += ' AND p.price <= ?'; params.push(q.max_price); }
+    if (q.active_only === 'true' || q.active_only === true) baseQuery += ' AND p.is_active = 1';
+    if (q.is_active !== undefined) { baseQuery += ' AND p.is_active = ?'; params.push(q.is_active); }
+    if (q.verified_only === 'true' || q.verified_only === true) baseQuery += ' AND p.is_verified = 1';
+    if (q.is_verified !== undefined) { baseQuery += ' AND p.is_verified = ?'; params.push(q.is_verified); }
+    if (q.is_deleted !== undefined) { baseQuery += ' AND p.is_deleted = ?'; params.push(q.is_deleted); }
+    if (q.missing_image === 'true' || q.missing_image === true) baseQuery += " AND (p.image IS NULL OR p.image = '')";
+    if (q.missing_image === 'false' || q.missing_image === false) baseQuery += " AND (p.image IS NOT NULL AND p.image != '')";
+    if (q.has_parent_sku === 'true' || q.has_parent_sku === true) baseQuery += " AND (p.parent_sku IS NOT NULL AND p.parent_sku != '')";
+    if (q.stock_quantity !== undefined) { baseQuery += ' AND p.stock_quantity = ?'; params.push(q.stock_quantity); }
+    if (q.min_quantity !== undefined) { baseQuery += ' AND p.stock_quantity >= ?'; params.push(q.min_quantity); }
+    if (q.parent_sku_pack_discount_gt !== undefined) { baseQuery += ' AND p.parent_sku_pack_discount > ?'; params.push(q.parent_sku_pack_discount_gt); }
+
+    if (isQueryFlagTrue(q.has_minimum_qty)) {
+      baseQuery += ` AND ${MIN_QTY_ACTIVE_SQL}`;
+    }
+    if (isQueryFlagTrue(q.below_minimum)) {
+      baseQuery += ` AND ${MIN_QTY_ACTIVE_SQL} AND p.stock_quantity < p.minimum_qty`;
+    }
+    /** Ratio sort only meaningful when minimum_qty > 0 */
+    if (sortKey === 'stock_vs_minimum_ratio') {
+      baseQuery += ` AND ${MIN_QTY_ACTIVE_SQL}`;
+    }
+
+    const countRows = await sequelize.query(
+      `SELECT COUNT(*) as total FROM (${baseQuery}) as filtered`,
+      { type: QueryTypes.SELECT, replacements: params }
+    );
+    const totalItems = countRows[0]?.total || 0;
+    const totalPages = allProducts ? 1 : Math.ceil(totalItems / limitNum);
+
+    baseQuery += ` ORDER BY ${sortSql} ${sortOrder}, p.product_id ASC`;
+    if (!allProducts) {
+      baseQuery += ' LIMIT ? OFFSET ?';
+      params.push(limitNum, (pageNum - 1) * limitNum);
+    }
+
+    const allProductsResult = await sequelize.query(baseQuery, {
+      type: QueryTypes.SELECT,
+      replacements: params,
+    });
+
+    const products = allProductsResult.map((p) => ({
+      ...p,
+      image: processImageUrl(p.image),
+      thumb_image: processImageUrl(p.thumb_image),
+    }));
+
+    successResponse(res, {
+      products,
+      pagination: {
+        total_items: totalItems,
+        total_pages: totalPages,
+        current_page: pageNum,
+        items_per_page: allProducts ? products.length : limitNum,
+        has_next_page: allProducts ? false : pageNum < totalPages,
+        has_prev_page: pageNum > 1,
+        version: 1.0,
+      },
+    }, 'Products fetched successfully');
+  } catch (err) {
+    errorResponse(res, err.message);
+  }
 }
 
 function syncParentSkusUrl() {
@@ -476,8 +602,16 @@ router.get('/sync_products/status', requireSheenInventoryJwt, async (req, res) =
   }
 });
 
+/**
+ * Legacy path used by older app builds — same as GET /products?has_minimum_qty=true.
+ * (Avoids /:id treating "with-minimum-qty" as product_id → "Product not found".)
+ */
 router.get('/:id', async (req, res, next) => {
-  if (!req.params.id || req.params.id === '') return next(); // Let GET / handle root path
+  if (String(req.params.id || '') === 'with-minimum-qty') {
+    Object.assign(req.query, { has_minimum_qty: 'true' });
+    return requireSheenInventoryJwt(req, res, () => handleProductList(req, res));
+  }
+  if (!req.params.id || req.params.id === '') return next();
   try {
     const products = await sequelize.query(
       'SELECT * FROM products WHERE product_id = ?',
@@ -601,92 +735,7 @@ router.post('/sync-parent-skus', async (req, res) => {
 });
 
 // GET / - filtered, sorted, paginated products (use allproducts=true to return all)
-router.get('/', requireSheenInventoryJwtForBulkList, async (req, res) => {
-  try {
-    const q = req.query;
-    const ap = String(q.allproducts || '').toLowerCase().trim();
-    const allProducts = ap === 'true' || ap === '1' || ap === 'yes';
-    const pageNum = allProducts ? 1 : Math.max(1, parseInt(q.page) || 1);
-    const limitNum = allProducts ? 50000 : Math.max(1, Math.min(parseInt(q.limit) || 10, 100));
-    const validSortFields = [
-      'product_name', 'price', 'sku', 'created_at', 'updated_at', 'stock_quantity',
-      'is_active', 'is_verified', 'parent_sku', 'parent_quantity', 'parent_sku_pack_discount', 'is_deleted',
-    ];
-    const sortBy = validSortFields.includes(q.sort_by) ? q.sort_by : 'product_name';
-    const sortOrder = ['ASC', 'DESC'].includes((q.sort_order || '').toUpperCase()) ? q.sort_order.toUpperCase() : 'ASC';
-
-    let baseQuery = 'SELECT p.* FROM products p WHERE 1=1';
-    const params = [];
-
-    if (q.exclude_category) {
-      baseQuery += ` AND p.product_id NOT IN (SELECT product_id FROM product_categories WHERE category_id = ?)`;
-      params.push(q.exclude_category);
-    }
-    if (q.category) {
-      baseQuery += ` AND p.product_id IN (SELECT product_id FROM product_categories WHERE category_id = ?)`;
-      params.push(q.category);
-    }
-    if (q.sku) {
-      const normalizedSku = (q.sku || '').replace(/^0+/, '');
-      baseQuery += ' AND (p.sku LIKE ? OR p.sku = ?)';
-      params.push(normalizedSku.includes('%') ? normalizedSku : normalizedSku, q.sku);
-    }
-    if (q.parent_sku) { baseQuery += ' AND p.parent_sku = ?'; params.push(q.parent_sku); }
-    if (q.name) { baseQuery += ' AND p.product_name LIKE ?'; params.push(`%${q.name}%`); }
-    if (q.min_price) { baseQuery += ' AND p.price >= ?'; params.push(q.min_price); }
-    if (q.max_price) { baseQuery += ' AND p.price <= ?'; params.push(q.max_price); }
-    if (q.active_only === 'true' || q.active_only === true) baseQuery += ' AND p.is_active = 1';
-    if (q.is_active !== undefined) { baseQuery += ' AND p.is_active = ?'; params.push(q.is_active); }
-    if (q.verified_only === 'true' || q.verified_only === true) baseQuery += ' AND p.is_verified = 1';
-    if (q.is_verified !== undefined) { baseQuery += ' AND p.is_verified = ?'; params.push(q.is_verified); }
-    if (q.is_deleted !== undefined) { baseQuery += ' AND p.is_deleted = ?'; params.push(q.is_deleted); }
-    if (q.missing_image === 'true' || q.missing_image === true) baseQuery += " AND (p.image IS NULL OR p.image = '')";
-    if (q.missing_image === 'false' || q.missing_image === false) baseQuery += " AND (p.image IS NOT NULL AND p.image != '')";
-    if (q.has_parent_sku === 'true' || q.has_parent_sku === true) baseQuery += " AND (p.parent_sku IS NOT NULL AND p.parent_sku != '')";
-    if (q.stock_quantity !== undefined) { baseQuery += ' AND p.stock_quantity = ?'; params.push(q.stock_quantity); }
-    if (q.min_quantity !== undefined) { baseQuery += ' AND p.stock_quantity >= ?'; params.push(q.min_quantity); }
-    if (q.parent_sku_pack_discount_gt !== undefined) { baseQuery += ' AND p.parent_sku_pack_discount > ?'; params.push(q.parent_sku_pack_discount_gt); }
-
-    const countRows = await sequelize.query(
-      `SELECT COUNT(*) as total FROM (${baseQuery}) as filtered`,
-      { type: QueryTypes.SELECT, replacements: params }
-    );
-    const totalItems = countRows[0]?.total || 0;
-    const totalPages = allProducts ? 1 : Math.ceil(totalItems / limitNum);
-
-    baseQuery += ` ORDER BY p.${sortBy} ${sortOrder}`;
-    if (!allProducts) {
-      baseQuery += ' LIMIT ? OFFSET ?';
-      params.push(limitNum, (pageNum - 1) * limitNum);
-    }
-
-    const allProductsResult = await sequelize.query(baseQuery, {
-      type: QueryTypes.SELECT,
-      replacements: params,
-    });
-
-    const products = allProductsResult.map((p) => ({
-      ...p,
-      image: processImageUrl(p.image),
-      thumb_image: processImageUrl(p.thumb_image),
-    }));
-
-    successResponse(res, {
-      products,
-      pagination: {
-        total_items: totalItems,
-        total_pages: totalPages,
-        current_page: pageNum,
-        items_per_page: allProducts ? products.length : limitNum,
-        has_next_page: allProducts ? false : pageNum < totalPages,
-        has_prev_page: pageNum > 1,
-        version: 1.0,
-      },
-    }, 'Products fetched successfully');
-  } catch (err) {
-    errorResponse(res, err.message);
-  }
-});
+router.get('/', requireSheenInventoryJwtForBulkList, handleProductList);
 
 module.exports = router;
 module.exports.handleSyncProductsPhp = handleSyncProductsPhp;

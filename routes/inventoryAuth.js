@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
 const { getFirebaseInstance } = require('../config/firebase');
+const { parseIsCostPriceVisible } = require('../utils/parseIsCostPriceVisible');
 
 const router = express.Router();
 
@@ -117,7 +118,7 @@ router.post('/session', async (req, res) => {
       });
     }
 
-    const isCostPriceVisible = !!Number(row.is_cost_price_visible);
+    const isCostPriceVisible = parseIsCostPriceVisible(row.is_cost_price_visible);
 
     const accessToken = jwt.sign(
       {
@@ -201,7 +202,7 @@ router.get('/me', async (req, res) => {
       });
     }
 
-    const isCostPriceVisible = !!Number(row.is_cost_price_visible);
+    const isCostPriceVisible = parseIsCostPriceVisible(row.is_cost_price_visible);
 
     return res.json({
       success: true,

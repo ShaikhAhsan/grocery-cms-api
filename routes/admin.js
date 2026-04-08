@@ -376,6 +376,8 @@ const PRODUCT_LIST_SORT_SQL = {
   brand: 'b.name',
   old_price: 'p.old_price',
   price: 'p.price',
+  stock_quantity: 'p.stock_quantity',
+  minimum_qty: 'p.minimum_qty',
 };
 
 function productListOrderClause(query) {

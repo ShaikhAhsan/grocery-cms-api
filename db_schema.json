@@ -320,6 +320,7 @@
       "cost_price",
       "thumb_image",
       "stock_quantity",
+      "minimum_qty",
       "sku",
       "parent_sku",
       "parent_quantity",
