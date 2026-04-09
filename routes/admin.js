@@ -2,6 +2,8 @@
  * Admin CRUD API - Tables from grocery_store_db (excludes backup_categories, backup_products)
  */
 const express = require('express');
+const http = require('http');
+const https = require('https');
 const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
@@ -112,6 +114,23 @@ const uploadMicroserviceBase = (
 
 const MAX_FETCH_IMAGE_BYTES = 15 * 1024 * 1024;
 
+/** Pool connections — faster for repeated imports than a cold socket each time. */
+const imageImportHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 50 });
+const imageImportHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+
+/**
+ * CDNs often throttle or slow the default axios User-Agent. Browsers work because they send a real Chrome UA.
+ * Override with IMAGE_IMPORT_USER_AGENT if needed.
+ */
+const IMAGE_IMPORT_USER_AGENT =
+  process.env.IMAGE_IMPORT_USER_AGENT?.trim() ||
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+const IMAGE_IMPORT_TIMEOUT_MS = Math.min(
+  Math.max(parseInt(process.env.IMAGE_IMPORT_TIMEOUT_MS || '45000', 10) || 45000, 3000),
+  120000
+);
+
 function assertFetchableImageUrl(raw) {
   const trimmed = String(raw || '').trim();
   if (!trimmed) throw new Error('URL is required');
@@ -160,11 +179,20 @@ router.post('/import/image-from-url', async (req, res) => {
     const href = assertFetchableImageUrl(req.body?.url);
     const response = await axios.get(href, {
       responseType: 'arraybuffer',
-      timeout: 45000,
+      timeout: IMAGE_IMPORT_TIMEOUT_MS,
       maxContentLength: MAX_FETCH_IMAGE_BYTES,
       maxBodyLength: MAX_FETCH_IMAGE_BYTES,
       validateStatus: (s) => s >= 200 && s < 300,
-      headers: { Accept: 'image/*,*/*;q=0.8' },
+      httpAgent: imageImportHttpAgent,
+      httpsAgent: imageImportHttpsAgent,
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'User-Agent': IMAGE_IMPORT_USER_AGENT,
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      /** Avoid rare CDN/TLS issues with HTTP/2 from Node; axios uses HTTP/1.1 for this path. */
+      maxRedirects: 5,
+      decompress: true,
     });
     const buf = Buffer.from(response.data);
     if (buf.length === 0) {
