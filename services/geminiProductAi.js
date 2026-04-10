@@ -9,9 +9,12 @@ const { QueryTypes } = require('sequelize');
 const API_KEY = () => process.env.GOOGLE_API_KEY;
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-const VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.0-flash';
+/** Vision + JSON extraction; gemini-2.0-flash is deprecated for new API keys — use 2.5+ */
+const VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
 /** Image generation / editing; override if Google renames models (see ai.google.dev). */
 const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
+/** Retries when Google returns 429 / quota with "retry in Ns" (default 3). Set 1 to disable extra attempts. */
+const QUOTA_RETRIES = Math.min(6, Math.max(1, parseInt(process.env.GEMINI_QUOTA_RETRIES || '3', 10)));
 
 const LISTING_IMAGE_PROMPT = `Using the attached product photo, produce a single square e-commerce product image suitable for an online store listing.
 
@@ -33,11 +36,6 @@ function normalizeLabel(s) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
-}
-
-function slugifyCategoryName(name) {
-  const s = normalizeLabel(name).replace(/\s+/g, '-');
-  return s || 'category';
 }
 
 async function loadBrandRows() {
@@ -87,27 +85,67 @@ function parseJsonFromModelText(text) {
   return JSON.parse(t);
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function parseRetrySecondsFromMessage(msg) {
+  const m = String(msg).match(/retry in\s+([\d.]+)\s*s/i);
+  if (!m) return null;
+  const sec = parseFloat(m[1], 10);
+  if (!Number.isFinite(sec)) return null;
+  return Math.min(120, Math.max(1, Math.ceil(sec)));
+}
+
+function isQuotaOrRateLimit(httpStatus, message, json) {
+  if (httpStatus === 429) return true;
+  const st = json?.error?.status || json?.error?.code;
+  if (st === 'RESOURCE_EXHAUSTED' || st === 429) return true;
+  const m = String(message || '');
+  return /RESOURCE_EXHAUSTED|quota exceeded|rate limit|too many requests/i.test(m);
+}
+
+function quotaHintFooter(message) {
+  const m = String(message || '');
+  if (!/quota|limit:\s*0|billing|RESOURCE_EXHAUSTED|rate limit/i.test(m)) return '';
+  return (
+    '\n\n---\n' +
+    'Grocery CMS hint: If you see "limit: 0" or repeated quota errors, link a billing account to the Google Cloud project that owns this API key (Console → Billing), then enable the Generative Language API. Free tiers still apply to many models; see https://ai.google.dev/pricing and https://ai.google.dev/gemini-api/docs/rate-limits'
+  );
+}
+
 async function geminiGenerateContent(model, body) {
   const key = API_KEY();
   if (!key) throw new Error('GOOGLE_API_KEY is not configured');
   const url = `${BASE}/${model}:generateContent?key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const rawText = await res.text();
-  let json = {};
-  try {
-    json = rawText ? JSON.parse(rawText) : {};
-  } catch {
-    throw new Error(`Gemini invalid JSON: ${rawText.slice(0, 200)}`);
+
+  let lastMsg = '';
+  for (let attempt = 0; attempt < QUOTA_RETRIES; attempt += 1) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const rawText = await res.text();
+    let json = {};
+    try {
+      json = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      throw new Error(`Gemini invalid JSON: ${rawText.slice(0, 200)}`);
+    }
+    if (res.ok) return json;
+
+    lastMsg = json.error?.message || json.message || rawText.slice(0, 1200);
+    const retryable = isQuotaOrRateLimit(res.status, lastMsg, json);
+    if (retryable && attempt < QUOTA_RETRIES - 1) {
+      const waitSec = parseRetrySecondsFromMessage(lastMsg);
+      const delayMs =
+        waitSec != null ? waitSec * 1000 + 250 : Math.min(30000, 1800 * 2 ** attempt);
+      await sleep(delayMs);
+      continue;
+    }
+    break;
   }
-  if (!res.ok) {
-    const msg = json.error?.message || json.message || rawText.slice(0, 400);
-    throw new Error(msg || `Gemini HTTP ${res.status}`);
-  }
-  return json;
+
+  throw new Error((lastMsg || 'Gemini request failed') + quotaHintFooter(lastMsg));
 }
 
 function concatTextParts(response) {

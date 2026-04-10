@@ -9,6 +9,8 @@ const { QueryTypes } = require('sequelize');
 const router = express.Router();
 const API_KEY = process.env.GOOGLE_API_KEY;
 const BASE_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+/** Default text model; override with GEMINI_TEXT_MODEL. Avoid gemini-2.0-flash for new API keys. */
+const TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
 
 async function generateContent(model, prompt) {
   if (!API_KEY) throw new Error('Missing GOOGLE_API_KEY');
@@ -29,7 +31,7 @@ async function generateContent(model, prompt) {
 
 async function fixProductName(inputName) {
   const prompt = `Fix the product name for a website in proper English and format. Return only the corrected product name with no explanation. Example input: "${inputName}"`;
-  return generateContent('gemini-2.0-flash', prompt);
+  return generateContent(TEXT_MODEL, prompt);
 }
 
 router.post('/fix-product-name', async (req, res) => {
@@ -87,7 +89,7 @@ Return JSON: {"name":"...","unit":"...","brand":"...","slug":"...","categories":
 Only valid JSON, no extra text.`;
 
       try {
-        const aiResponse = await generateContent('gemini-2.0-flash', prompt);
+        const aiResponse = await generateContent(TEXT_MODEL, prompt);
         const parsed = JSON.parse(aiResponse.replace(/```json|```/g, '').trim());
         const cleanedName = parsed.name?.trim() || product.product_name;
         const extractedUnit = parsed.unit?.trim();
