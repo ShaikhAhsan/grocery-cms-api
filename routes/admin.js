@@ -11,6 +11,7 @@ const router = express.Router();
 const { sequelize } = require('../config/database');
 const { QueryTypes } = require('sequelize');
 const schema = require('../db_schema.json');
+const geminiProductAi = require('../services/geminiProductAi');
 
 function isDuplicateKeyError(err) {
   const orig = err?.original || err?.parent;
@@ -828,6 +829,142 @@ function normalizeNullableUrlField(v) {
   const s = String(v).trim();
   return s === '' ? null : s;
 }
+
+/**
+ * AI: extract product fields + match categories/tags/brands from a product photo (Gemini vision).
+ * Body: { imageUrl?: string, imageBase64?: string, mimeType?: string }
+ */
+router.post('/ai/product/extract-from-image', async (req, res) => {
+  try {
+    if (!process.env.GOOGLE_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'GOOGLE_API_KEY is not set. Add it to grocery-cms-api .env (Google AI Studio key).',
+      });
+    }
+    let buf;
+    let mime = (req.body && req.body.mimeType) || 'image/jpeg';
+
+    if (req.body?.imageBase64) {
+      buf = Buffer.from(String(req.body.imageBase64), 'base64');
+      if (!buf.length) {
+        return res.status(400).json({ success: false, error: 'imageBase64 is empty' });
+      }
+      const sniffed = sniffImageMime(buf);
+      if (sniffed) mime = sniffed;
+    } else if (req.body?.imageUrl) {
+      const href = assertFetchableImageUrl(req.body.imageUrl);
+      const response = await axios.get(href, {
+        responseType: 'arraybuffer',
+        timeout: IMAGE_IMPORT_TIMEOUT_MS,
+        maxContentLength: MAX_FETCH_IMAGE_BYTES,
+        maxBodyLength: MAX_FETCH_IMAGE_BYTES,
+        validateStatus: (s) => s >= 200 && s < 300,
+        httpAgent: imageImportHttpAgent,
+        httpsAgent: imageImportHttpsAgent,
+        headers: {
+          Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+          'User-Agent': IMAGE_IMPORT_USER_AGENT,
+        },
+        maxRedirects: 5,
+        decompress: true,
+      });
+      buf = Buffer.from(response.data);
+      const headerCt = String(response.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      const sniffed = sniffImageMime(buf);
+      mime =
+        headerCt && headerCt.startsWith('image/') ? headerCt : sniffed || 'image/jpeg';
+      if (!mime.startsWith('image/')) {
+        return res.status(400).json({ success: false, error: 'URL did not return an image' });
+      }
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'Provide imageUrl or imageBase64 (product photo)',
+      });
+    }
+
+    if (buf.length > MAX_FETCH_IMAGE_BYTES) {
+      return res.status(400).json({ success: false, error: 'Image is too large' });
+    }
+
+    const data = await geminiProductAi.extractProductFromImage(buf, mime);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'AI extract failed' });
+  }
+});
+
+/**
+ * AI: generate a clean white-background 512-friendly listing image from the source photo (Gemini image model).
+ * Body: { imageUrl?: string, imageBase64?: string, mimeType?: string }
+ */
+router.post('/ai/product/generate-listing-image', async (req, res) => {
+  try {
+    if (!process.env.GOOGLE_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: 'GOOGLE_API_KEY is not set.',
+      });
+    }
+    let buf;
+    let mime = (req.body && req.body.mimeType) || 'image/jpeg';
+
+    if (req.body?.imageBase64) {
+      buf = Buffer.from(String(req.body.imageBase64), 'base64');
+      if (!buf.length) {
+        return res.status(400).json({ success: false, error: 'imageBase64 is empty' });
+      }
+      const sniffed = sniffImageMime(buf);
+      if (sniffed) mime = sniffed;
+    } else if (req.body?.imageUrl) {
+      const href = assertFetchableImageUrl(req.body.imageUrl);
+      const response = await axios.get(href, {
+        responseType: 'arraybuffer',
+        timeout: IMAGE_IMPORT_TIMEOUT_MS,
+        maxContentLength: MAX_FETCH_IMAGE_BYTES,
+        maxBodyLength: MAX_FETCH_IMAGE_BYTES,
+        validateStatus: (s) => s >= 200 && s < 300,
+        httpAgent: imageImportHttpAgent,
+        httpsAgent: imageImportHttpsAgent,
+        headers: {
+          Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+          'User-Agent': IMAGE_IMPORT_USER_AGENT,
+        },
+        maxRedirects: 5,
+        decompress: true,
+      });
+      buf = Buffer.from(response.data);
+      const headerCt = String(response.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      const sniffed = sniffImageMime(buf);
+      mime =
+        headerCt && headerCt.startsWith('image/') ? headerCt : sniffed || 'image/jpeg';
+      if (!mime.startsWith('image/')) {
+        return res.status(400).json({ success: false, error: 'URL did not return an image' });
+      }
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'Provide imageUrl or imageBase64',
+      });
+    }
+
+    if (buf.length > MAX_FETCH_IMAGE_BYTES) {
+      return res.status(400).json({ success: false, error: 'Image is too large' });
+    }
+
+    const out = await geminiProductAi.generateListingImage(buf, mime);
+    res.json({
+      success: true,
+      data: {
+        imageBase64: out.base64,
+        mimeType: out.mimeType,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || 'Image generation failed' });
+  }
+});
 
 router.patch('/products/:productId/images', async (req, res) => {
   try {
