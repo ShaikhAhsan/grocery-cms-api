@@ -761,6 +761,50 @@ router.put('/products/:productId/category-links', async (req, res) => {
 });
 
 /**
+ * Append one category to a product (does not remove existing links). Idempotent if already linked.
+ * POST /api/v1/admin/products/:productId/category-links/append
+ * Body: { category_id: number }
+ */
+router.post('/products/:productId/category-links/append', async (req, res) => {
+  const productId = parseInt(req.params.productId, 10);
+  const categoryId = parseInt(req.body?.category_id, 10);
+  if (Number.isNaN(productId) || Number.isNaN(categoryId)) {
+    return res.status(400).json({ success: false, error: 'Invalid product_id or category_id' });
+  }
+  try {
+    const [exists] = await sequelize.query(
+      `SELECT 1 as ok FROM product_categories WHERE product_id = :productId AND category_id = :categoryId LIMIT 1`,
+      { type: QueryTypes.SELECT, replacements: { productId, categoryId } }
+    );
+    if (exists) {
+      const rows = await sequelize.query(
+        `SELECT category_id FROM product_categories WHERE product_id = :productId ORDER BY position ASC`,
+        { type: QueryTypes.SELECT, replacements: { productId } }
+      );
+      const category_ids = rows.map((r) => r.category_id);
+      return res.json({ success: true, data: { appended: false, category_ids } });
+    }
+    const [maxRow] = await sequelize.query(
+      `SELECT COALESCE(MAX(position), 0) as m FROM product_categories WHERE product_id = :productId`,
+      { type: QueryTypes.SELECT, replacements: { productId } }
+    );
+    const pos = (maxRow?.m != null ? Number(maxRow.m) : 0) + 1;
+    await sequelize.query(
+      `INSERT INTO product_categories (category_id, product_id, position) VALUES (:cid, :pid, :pos)`,
+      { replacements: { cid: categoryId, pid: productId, pos } }
+    );
+    const rows = await sequelize.query(
+      `SELECT category_id FROM product_categories WHERE product_id = :productId ORDER BY position ASC`,
+      { type: QueryTypes.SELECT, replacements: { productId } }
+    );
+    const category_ids = rows.map((r) => r.category_id);
+    res.json({ success: true, data: { appended: true, category_ids } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * Product ↔ tags (junction table product_tags). GET for editor; PUT replaces all links.
  */
 router.get('/products/:productId/tag-links', async (req, res) => {
@@ -810,6 +854,45 @@ router.put('/products/:productId/tag-links', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     if (t) await t.rollback();
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Append one tag to a product (does not remove existing links). Idempotent if already linked.
+ * POST /api/v1/admin/products/:productId/tag-links/append
+ * Body: { tag_id: number }
+ */
+router.post('/products/:productId/tag-links/append', async (req, res) => {
+  const productId = parseInt(req.params.productId, 10);
+  const tagId = parseInt(req.body?.tag_id, 10);
+  if (Number.isNaN(productId) || Number.isNaN(tagId)) {
+    return res.status(400).json({ success: false, error: 'Invalid product_id or tag_id' });
+  }
+  try {
+    const [exists] = await sequelize.query(
+      `SELECT 1 as ok FROM product_tags WHERE product_id = :productId AND tag_id = :tagId LIMIT 1`,
+      { type: QueryTypes.SELECT, replacements: { productId, tagId } }
+    );
+    if (exists) {
+      const rows = await sequelize.query(
+        `SELECT tag_id FROM product_tags WHERE product_id = :productId ORDER BY tag_id ASC`,
+        { type: QueryTypes.SELECT, replacements: { productId } }
+      );
+      const tag_ids = rows.map((r) => r.tag_id);
+      return res.json({ success: true, data: { appended: false, tag_ids } });
+    }
+    await sequelize.query(
+      `INSERT INTO product_tags (product_id, tag_id, created_at) VALUES (:pid, :tid, NOW())`,
+      { replacements: { pid: productId, tid: tagId } }
+    );
+    const rows = await sequelize.query(
+      `SELECT tag_id FROM product_tags WHERE product_id = :productId ORDER BY tag_id ASC`,
+      { type: QueryTypes.SELECT, replacements: { productId } }
+    );
+    const tag_ids = rows.map((r) => r.tag_id);
+    res.json({ success: true, data: { appended: true, tag_ids } });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
