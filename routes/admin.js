@@ -616,9 +616,50 @@ async function productsGetEnriched(req, res) {
   }
 }
 
+/**
+ * GET /api/v1/admin/products/by-sku?sku=...
+ * Same enriched shape as GET /products/:id — used to copy fields from another product in the CMS.
+ * Registered before /products/:id so "by-sku" is not captured as an id.
+ */
+async function productsLookupBySku(req, res) {
+  const sku = String(req.query.sku ?? '').trim();
+  if (!sku) {
+    return res.status(400).json({ success: false, error: 'Missing sku query parameter' });
+  }
+  try {
+    const rows = await sequelize.query(
+      `SELECT p.*, b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image
+       FROM products p
+       LEFT JOIN brand b ON b.id = p.brand_id
+       WHERE p.sku = :sku
+       LIMIT 2`,
+      { type: QueryTypes.SELECT, replacements: { sku } }
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'No product with this SKU' });
+    }
+    if (rows.length > 1) {
+      return res.status(409).json({
+        success: false,
+        error: 'Multiple products share this SKU; fix duplicates in the database first.',
+      });
+    }
+    const row = rows[0];
+    const pid = row.product_id;
+    const [catMap, tagMap] = await Promise.all([
+      categoriesByProductIds([pid]),
+      tagsByProductIds([pid]),
+    ]);
+    res.json({ success: true, data: shapeProductRow(row, catMap, tagMap) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 function mountProducts(path, table, cols, idCol) {
   const a = api(table, cols, idCol);
   router.get(path, productsListEnriched);
+  router.get(`${path}/by-sku`, productsLookupBySku);
   router.get(`${path}/:id`, productsGetEnriched);
   router.post(path, a.create);
   router.put(`${path}/:id`, a.update);
