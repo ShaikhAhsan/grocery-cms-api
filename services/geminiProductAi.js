@@ -20,10 +20,10 @@ const LISTING_IMAGE_PROMPT = `Using the attached product photo, produce a single
 
 Requirements:
 - Output must be suitable for a 512×512 pixel square frame (1:1 aspect ratio).
-- Place the product centered on a pure white background (#FFFFFF).
-- Use soft, natural, even studio lighting with no harsh shadows and no visible reflections on the background.
-- Leave even spacing around the product; slightly more margin at the top, left, and right than at the bottom for a clean layout.
-- Keep the product straight, fully visible, and sharp; do not crop important label text.
+- Pure white background (#FFFFFF) with soft, natural, even studio lighting; no harsh shadows and no visible reflections on the background.
+- **Composition — make the product large, not a small object in the middle:** scale and frame the product so it fills most of the square. Aim for about **15% of the frame width** as clear white margin on the **left** and **15% on the right**, and about **10% margin** at the **top** and **10% at the bottom**. The product should occupy the area between those margins (hero-style listing shot), still fully visible and not clipped.
+- Center the product in the frame but **prioritize filling the available area** between those margins — avoid excessive empty space that makes the pack look tiny.
+- Keep the product straight, sharp, and fully readable; do not crop important label text.
 - Preserve the original packaging design, colors, typography, and text as accurately as possible — do not redesign the brand or invent text.
 - Style: minimal, professional, catalog photography.
 
