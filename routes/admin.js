@@ -1229,7 +1229,10 @@ router.post('/ai/product/extract-from-image', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Image is too large' });
     }
 
-    const data = await geminiProductAi.extractProductFromImage(buf, mime);
+    const existingProductName = req.body?.product_name ?? req.body?.productName;
+    const data = await geminiProductAi.extractProductFromImage(buf, mime, {
+      existingProductName,
+    });
     res.json({ success: true, data });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message || 'AI extract failed' });

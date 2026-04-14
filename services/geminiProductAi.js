@@ -126,6 +126,96 @@ function extractUnitFromName(productName) {
   return '';
 }
 
+function escapeRegex(str) {
+  return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeProductNameCase(rawName) {
+  const lower = String(rawName || '').trim().toLowerCase();
+  if (!lower) return '';
+  return lower
+    .split(/\s+/)
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : ''))
+    .join(' ');
+}
+
+function removeUnitFromName(productName, unit) {
+  let name = String(productName || '').replace(/\s+/g, ' ').trim();
+  const normalizedUnit = String(unit || '').trim();
+  if (!name) return '';
+  if (!normalizedUnit) return name;
+
+  const looseUnitPattern = escapeRegex(normalizedUnit)
+    .replace(/\\\s+/g, '\\s+')
+    .replace(/x/gi, '\\s*[xX]\\s*');
+  const direct = new RegExp(`(?:^|\\s|\\(|\\[|-)${looseUnitPattern}(?:\\s|\\)|\\]|$|,)`, 'ig');
+  name = name.replace(direct, ' ');
+
+  // Also strip common "100 g / 1 kg / 500 ml" variants if unit appears that way in the name.
+  const compact = normalizedUnit.match(/^(\d+(?:\.\d+)?)(kg|g|mg|ml|l)$/i);
+  if (compact) {
+    const [, n, u] = compact;
+    const qtyLoose = new RegExp(`(?:^|\\s|\\(|\\[|-)${escapeRegex(n)}\\s*${escapeRegex(u)}(?:\\s|\\)|\\]|$|,)`, 'ig');
+    name = name.replace(qtyLoose, ' ');
+  }
+
+  return name.replace(/\s+/g, ' ').replace(/^[\s,;:|/-]+|[\s,;:|/-]+$/g, '').trim();
+}
+
+function normalizeSuggestedProductName(aiName, unit, existingName) {
+  const aiRaw = String(aiName || '').trim();
+  const fallbackRaw = String(existingName || '').trim();
+  const base = aiRaw || fallbackRaw;
+  if (!base) return '';
+
+  let cleaned = removeUnitFromName(base, unit);
+  if (!cleaned && fallbackRaw) cleaned = removeUnitFromName(fallbackRaw, unit);
+  if (!cleaned) cleaned = base;
+  return normalizeProductNameCase(cleaned);
+}
+
+function tokenizeNameForCompare(name) {
+  return normalizeLabel(name)
+    .split(' ')
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 2);
+}
+
+function shouldPreferExistingProductName(aiName, existingName) {
+  const ai = String(aiName || '').trim();
+  const existing = String(existingName || '').trim();
+  if (!existing) return false;
+  if (!ai) return true;
+
+  const aiNorm = normalizeLabel(ai);
+  const existingNorm = normalizeLabel(existing);
+  if (!aiNorm) return true;
+  if (aiNorm === existingNorm) return true;
+
+  // Weak OCR-like outputs or placeholders from transparent/no-label packs.
+  if (
+    /^(product|item|pack|grocery|food|unknown|n\/a)$/i.test(aiNorm) ||
+    aiNorm.length <= 4
+  ) {
+    return true;
+  }
+
+  const aiTokens = tokenizeNameForCompare(aiNorm);
+  const existingTokens = tokenizeNameForCompare(existingNorm);
+  if (aiTokens.length <= 1 && existingTokens.length > 0) return true;
+
+  const existingSet = new Set(existingTokens);
+  let overlap = 0;
+  for (const t of aiTokens) {
+    if (existingSet.has(t)) overlap += 1;
+  }
+  const overlapRatio = aiTokens.length ? overlap / aiTokens.length : 0;
+
+  // If AI name shares almost nothing with current draft name, trust existing draft more.
+  if (overlapRatio < 0.34) return true;
+  return false;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function parseRetrySecondsFromMessage(msg) {
@@ -221,7 +311,8 @@ function extractFirstInlineImage(response) {
  * @param {Buffer} imageBuffer
  * @param {string} mimeType
  */
-async function extractProductFromImage(imageBuffer, mimeType) {
+async function extractProductFromImage(imageBuffer, mimeType, options = {}) {
+  const existingProductName = String(options?.existingProductName || '').trim();
   const brands = await loadBrandRows();
   const categories = await loadCategoryRows();
   const tags = await loadTagRows();
@@ -254,7 +345,10 @@ Existing categories:
 ${catLines || '(none)'}
 
 Existing tags:
-${tagLines || '(none)'}`;
+${tagLines || '(none)'}
+
+Current draft product name from CMS (use this when image text is unclear, but normalize it):
+${existingProductName || '(empty)'}`;
 
   const b64 = imageBuffer.toString('base64');
   const body = {
@@ -277,11 +371,15 @@ ${tagLines || '(none)'}`;
   const text = concatTextParts(response);
   const aiRaw = parseJsonFromModelText(text);
 
-  const product_name = String(aiRaw.product_name || '').trim();
+  const aiProductName = String(aiRaw.product_name || '').trim();
   let unit = normalizeExtractedUnit(aiRaw.unit);
   if (!unit) {
-    unit = extractUnitFromName(product_name);
+    unit = extractUnitFromName(aiProductName) || extractUnitFromName(existingProductName);
   }
+  const chosenName = shouldPreferExistingProductName(aiProductName, existingProductName)
+    ? existingProductName
+    : aiProductName;
+  const product_name = normalizeSuggestedProductName(chosenName, unit, existingProductName);
   const brand_text = String(aiRaw.brand_text || '').trim();
   const category_hints = Array.isArray(aiRaw.category_hints) ? aiRaw.category_hints.map(String) : [];
   const tag_hints = Array.isArray(aiRaw.tag_hints) ? aiRaw.tag_hints.map(String) : [];
