@@ -1436,6 +1436,45 @@ router.get('/reports/dashboard', async (req, res) => {
   }
 });
 
+router.get('/reports/slug/:slug', async (req, res) => {
+  try {
+    await ensureReportTableExists();
+    const slug = String(req.params.slug || '').trim().toLowerCase();
+    if (!slug) return res.status(400).json({ success: false, error: 'Invalid report slug' });
+    const [row] = await sequelize.query(
+      `SELECT report_id, name, slug, report_type, title_input_key, inputs_json, image_columns_json,
+              query_sql, show_on_dashboard, is_active, created_at, updated_at
+       FROM cms_reports
+       WHERE slug = :slug
+       LIMIT 1`,
+      { type: QueryTypes.SELECT, replacements: { slug } }
+    );
+    if (!row) return res.status(404).json({ success: false, error: 'Report not found' });
+    res.json({
+      success: true,
+      data: {
+        ...row,
+        inputs: (() => {
+          try {
+            return JSON.parse(row.inputs_json || '[]');
+          } catch {
+            return [];
+          }
+        })(),
+        image_columns: (() => {
+          try {
+            return JSON.parse(row.image_columns_json || '[]');
+          } catch {
+            return [];
+          }
+        })(),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/reports/:reportId', async (req, res) => {
   try {
     await ensureReportTableExists();
@@ -1643,6 +1682,62 @@ router.post('/reports/:reportId/run', async (req, res) => {
        WHERE report_id = :reportId
        LIMIT 1`,
       { type: QueryTypes.SELECT, replacements: { reportId } }
+    );
+    if (!row) return res.status(404).json({ success: false, error: 'Report not found' });
+    if (!(row.is_active === 1 || row.is_active === true || row.is_active === '1')) {
+      return res.status(400).json({ success: false, error: 'Report is inactive' });
+    }
+    const inputs = (() => {
+      try {
+        return parseReportInputFields(JSON.parse(row.inputs_json || '[]'));
+      } catch {
+        return [];
+      }
+    })();
+    const imageColumns = (() => {
+      try {
+        return parseImageColumns(JSON.parse(row.image_columns_json || '[]'));
+      } catch {
+        return [];
+      }
+    })();
+    const templateSql = normalizeReadOnlySelectSql(row.query_sql);
+    const params = req.body?.params && typeof req.body.params === 'object' ? req.body.params : {};
+    const { sql, replacements } = buildReportSqlAndReplacements(templateSql, inputs, params);
+    const safeSql = normalizeReadOnlySelectSql(sql);
+    const rows = await sequelize.query(safeSql, { type: QueryTypes.SELECT, replacements });
+    res.json({
+      success: true,
+      data: {
+        report: {
+          report_id: row.report_id,
+          name: row.name,
+          slug: row.slug,
+          report_type: row.report_type,
+          title_input_key: row.title_input_key,
+          inputs,
+          image_columns: imageColumns,
+        },
+        rows,
+        rowCount: Array.isArray(rows) ? rows.length : 0,
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/reports/slug/:slug/run', async (req, res) => {
+  try {
+    await ensureReportTableExists();
+    const slug = String(req.params.slug || '').trim().toLowerCase();
+    if (!slug) return res.status(400).json({ success: false, error: 'Invalid report slug' });
+    const [row] = await sequelize.query(
+      `SELECT report_id, name, slug, report_type, title_input_key, inputs_json, image_columns_json, query_sql, is_active
+       FROM cms_reports
+       WHERE slug = :slug
+       LIMIT 1`,
+      { type: QueryTypes.SELECT, replacements: { slug } }
     );
     if (!row) return res.status(404).json({ success: false, error: 'Report not found' });
     if (!(row.is_active === 1 || row.is_active === true || row.is_active === '1')) {
