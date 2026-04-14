@@ -190,12 +190,14 @@ function reportCanonicalToken(raw) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
-function assertReadOnlySelectSql(sqlRaw) {
-  const sql = String(sqlRaw || '').trim();
+function normalizeReadOnlySelectSql(sqlRaw) {
+  let sql = String(sqlRaw || '').trim();
   if (!sql) throw new Error('Query is required');
   if (/--|\/\*|\*\//.test(sql)) {
     throw new Error('SQL comments are not allowed in report query');
   }
+  sql = sql.replace(/;\s*$/, '').trim();
+  if (!sql) throw new Error('Query is required');
   if (sql.includes(';')) {
     throw new Error('Only a single read-only SQL statement is allowed');
   }
@@ -209,6 +211,7 @@ function assertReadOnlySelectSql(sqlRaw) {
   ) {
     throw new Error('Only read-only SELECT queries are allowed');
   }
+  return sql;
 }
 
 function parseReportInputFields(rawInputs) {
@@ -1489,8 +1492,7 @@ router.post('/reports', async (req, res) => {
     if (titleInputKey && !inputs.some((x) => x.key === titleInputKey)) {
       return res.status(400).json({ success: false, error: 'Title input must match one input field key' });
     }
-    const querySql = String(body.query_sql || '').trim();
-    assertReadOnlySelectSql(querySql);
+    const querySql = normalizeReadOnlySelectSql(body.query_sql);
     const imageColumns = parseImageColumns(body.image_columns);
     const showOnDashboard = body.show_on_dashboard === false || body.show_on_dashboard === 0 || body.show_on_dashboard === '0' ? 0 : 1;
     const isActive = body.is_active === false || body.is_active === 0 || body.is_active === '0' ? 0 : 1;
@@ -1556,8 +1558,7 @@ router.put('/reports/:reportId', async (req, res) => {
     if (titleInputKey && !inputs.some((x) => x.key === titleInputKey)) {
       return res.status(400).json({ success: false, error: 'Title input must match one input field key' });
     }
-    const querySql = String(body.query_sql || '').trim();
-    assertReadOnlySelectSql(querySql);
+    const querySql = normalizeReadOnlySelectSql(body.query_sql);
     const imageColumns = parseImageColumns(body.image_columns);
     const showOnDashboard = body.show_on_dashboard === false || body.show_on_dashboard === 0 || body.show_on_dashboard === '0' ? 0 : 1;
     const isActive = body.is_active === false || body.is_active === 0 || body.is_active === '0' ? 0 : 1;
@@ -1661,11 +1662,11 @@ router.post('/reports/:reportId/run', async (req, res) => {
         return [];
       }
     })();
-    assertReadOnlySelectSql(row.query_sql);
+    const templateSql = normalizeReadOnlySelectSql(row.query_sql);
     const params = req.body?.params && typeof req.body.params === 'object' ? req.body.params : {};
-    const { sql, replacements } = buildReportSqlAndReplacements(row.query_sql, inputs, params);
-    assertReadOnlySelectSql(sql);
-    const rows = await sequelize.query(sql, { type: QueryTypes.SELECT, replacements });
+    const { sql, replacements } = buildReportSqlAndReplacements(templateSql, inputs, params);
+    const safeSql = normalizeReadOnlySelectSql(sql);
+    const rows = await sequelize.query(safeSql, { type: QueryTypes.SELECT, replacements });
     res.json({
       success: true,
       data: {
