@@ -637,6 +637,7 @@ function productListOrderClause(query) {
 
 const PRODUCT_SEARCH_MAX_TOKENS = 8;
 const PRODUCT_SEARCH_MAX_TOKEN_LEN = 64;
+const PRODUCT_FILTER_MAX_RULES = 30;
 
 /** Escape LIKE wildcards in user tokens (MySQL default escape \). */
 function escapeSqlLikeFragment(str) {
@@ -695,6 +696,141 @@ function buildProductSearchClause(rawQuery) {
   }
 
   return { sql: andGroups.join(' AND '), replacements };
+}
+
+const PRODUCT_FILTER_FIELD_SQL = {
+  product_name: 'p.product_name',
+  sku: 'p.sku',
+  slug: 'p.slug',
+  unit: 'p.unit',
+  image: 'p.image',
+  thumb_image: 'p.thumb_image',
+  brand_id: 'p.brand_id',
+  stock_quantity: 'p.stock_quantity',
+  minimum_qty: 'p.minimum_qty',
+  price: 'p.price',
+  old_price: 'p.old_price',
+  is_active: 'p.is_active',
+  is_verified: 'p.is_verified',
+  is_deleted: 'p.is_deleted',
+  created_at: 'p.created_at',
+  updated_at: 'p.updated_at',
+  image_updated_at: 'p.image_updated_at',
+};
+
+function parseProductFiltersRaw(rawFilters) {
+  if (rawFilters == null || rawFilters === '') return null;
+  if (typeof rawFilters === 'object') return rawFilters;
+  const text = String(rawFilters || '').trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function buildProductAdvancedFilterClause(rawFilters) {
+  const parsed = parseProductFiltersRaw(rawFilters);
+  if (!parsed || typeof parsed !== 'object') return { sql: '', replacements: [] };
+  const logic = String(parsed.logic || 'AND').trim().toUpperCase() === 'OR' ? 'OR' : 'AND';
+  const rules = Array.isArray(parsed.rules) ? parsed.rules.slice(0, PRODUCT_FILTER_MAX_RULES) : [];
+  if (!rules.length) return { sql: '', replacements: [] };
+
+  const compiledRules = [];
+  const replacements = [];
+
+  for (const rule of rules) {
+    const field = String(rule?.field || '').trim();
+    const op = String(rule?.op || '').trim().toLowerCase();
+    const column = PRODUCT_FILTER_FIELD_SQL[field];
+    if (!column || !op) continue;
+    const value = rule?.value;
+
+    const join = String(rule?.join || logic).trim().toUpperCase() === 'OR' ? 'OR' : 'AND';
+    if (op === 'is_empty') {
+      compiledRules.push({ sql: `(${column} IS NULL OR TRIM(CAST(${column} AS CHAR)) = '')`, join });
+      continue;
+    }
+    if (op === 'is_not_empty') {
+      compiledRules.push({ sql: `(${column} IS NOT NULL AND TRIM(CAST(${column} AS CHAR)) <> '')`, join });
+      continue;
+    }
+    if (op === 'contains') {
+      compiledRules.push({ sql: `CAST(${column} AS CHAR) LIKE ?`, join });
+      replacements.push(`%${escapeSqlLikeFragment(String(value ?? ''))}%`);
+      continue;
+    }
+    if (op === 'not_contains') {
+      compiledRules.push({ sql: `CAST(${column} AS CHAR) NOT LIKE ?`, join });
+      replacements.push(`%${escapeSqlLikeFragment(String(value ?? ''))}%`);
+      continue;
+    }
+    if (op === 'starts_with') {
+      compiledRules.push({ sql: `CAST(${column} AS CHAR) LIKE ?`, join });
+      replacements.push(`${escapeSqlLikeFragment(String(value ?? ''))}%`);
+      continue;
+    }
+    if (op === 'ends_with') {
+      compiledRules.push({ sql: `CAST(${column} AS CHAR) LIKE ?`, join });
+      replacements.push(`%${escapeSqlLikeFragment(String(value ?? ''))}`);
+      continue;
+    }
+    if (op === 'eq') {
+      compiledRules.push({ sql: `${column} = ?`, join });
+      replacements.push(value);
+      continue;
+    }
+    if (op === 'neq') {
+      compiledRules.push({ sql: `${column} <> ?`, join });
+      replacements.push(value);
+      continue;
+    }
+    if (op === 'gt') {
+      compiledRules.push({ sql: `${column} > ?`, join });
+      replacements.push(value);
+      continue;
+    }
+    if (op === 'gte') {
+      compiledRules.push({ sql: `${column} >= ?`, join });
+      replacements.push(value);
+      continue;
+    }
+    if (op === 'lt') {
+      compiledRules.push({ sql: `${column} < ?`, join });
+      replacements.push(value);
+      continue;
+    }
+    if (op === 'lte') {
+      compiledRules.push({ sql: `${column} <= ?`, join });
+      replacements.push(value);
+      continue;
+    }
+    if (op === 'in' || op === 'not_in') {
+      const arr = Array.isArray(value)
+        ? value.map((v) => String(v ?? '').trim()).filter((v) => v !== '')
+        : String(value ?? '')
+            .split(',')
+            .map((v) => v.trim())
+            .filter((v) => v !== '');
+      if (!arr.length) continue;
+      const placeholders = arr.map(() => '?').join(', ');
+      compiledRules.push({
+        sql: `${column} ${op === 'not_in' ? 'NOT IN' : 'IN'} (${placeholders})`,
+        join,
+      });
+      replacements.push(...arr);
+      continue;
+    }
+  }
+
+  if (!compiledRules.length) return { sql: '', replacements: [] };
+  const sql = compiledRules.reduce((acc, item, idx) => {
+    const block = `(${item.sql})`;
+    if (idx === 0) return block;
+    return `${acc} ${item.join} ${block}`;
+  }, '');
+  return { sql, replacements };
 }
 
 async function categoriesByProductIds(productIds) {
@@ -775,16 +911,22 @@ async function productsListEnriched(req, res) {
     const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
     const searchRaw = req.query.q != null ? req.query.q : req.query.search;
     const { sql: searchSql, replacements: searchReps } = buildProductSearchClause(searchRaw);
+    const { sql: advFilterSql, replacements: advFilterReps } = buildProductAdvancedFilterClause(
+      req.query.filters
+    );
     const legacyWhere = req.query.where ? String(req.query.where).trim() : '';
-
-    let whereSql = '';
-    if (legacyWhere && searchSql) {
-      whereSql = ` WHERE (${legacyWhere}) AND (${searchSql})`;
-    } else if (legacyWhere) {
-      whereSql = ` WHERE (${legacyWhere})`;
-    } else if (searchSql) {
-      whereSql = ` WHERE ${searchSql}`;
+    const whereParts = [];
+    const whereReplacements = [];
+    if (legacyWhere) whereParts.push(`(${legacyWhere})`);
+    if (searchSql) {
+      whereParts.push(`(${searchSql})`);
+      whereReplacements.push(...searchReps);
     }
+    if (advFilterSql) {
+      whereParts.push(`(${advFilterSql})`);
+      whereReplacements.push(...advFilterReps);
+    }
+    const whereSql = whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : '';
 
     const order = productListOrderClause(req.query);
     const fromJoin = 'FROM products p LEFT JOIN brand b ON b.id = p.brand_id';
@@ -794,11 +936,11 @@ async function productsListEnriched(req, res) {
        ${fromJoin}
        ${whereSql}${order}
        LIMIT ? OFFSET ?`,
-      { type: QueryTypes.SELECT, replacements: [...searchReps, limit, offset] }
+      { type: QueryTypes.SELECT, replacements: [...whereReplacements, limit, offset] }
     );
     const [countRow] = await sequelize.query(
       `SELECT COUNT(DISTINCT p.product_id) AS c ${fromJoin} ${whereSql}`,
-      { type: QueryTypes.SELECT, replacements: [...searchReps] }
+      { type: QueryTypes.SELECT, replacements: [...whereReplacements] }
     );
     const pids = rows.map((r) => r.product_id);
     const [catMap, tagMap] = await Promise.all([
