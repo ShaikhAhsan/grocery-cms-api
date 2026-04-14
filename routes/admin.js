@@ -57,6 +57,9 @@ function duplicateKeyMeta(err, table) {
 }
 
 function respondWriteError(err, res, table) {
+  if (err?.status === 400 || err?.code === 'VALIDATION_ERROR') {
+    return res.status(400).json({ success: false, error: err.message || 'Validation failed' });
+  }
   if (err.duplicateField) {
     return res.status(409).json({
       success: false,
@@ -75,6 +78,51 @@ function respondWriteError(err, res, table) {
     });
   }
   return res.status(500).json({ success: false, error: err.message });
+}
+
+function validationError(messageText) {
+  const err = new Error(messageText);
+  err.status = 400;
+  err.code = 'VALIDATION_ERROR';
+  return err;
+}
+
+function hasTextValue(value) {
+  return String(value ?? '').trim().length > 0;
+}
+
+async function assertProductRequiredFieldsOnWrite(table, idCol, body, updateId = null) {
+  if (table !== 'products') return;
+  const requiredLabels = {
+    product_name: 'product_name',
+    unit: 'unit',
+    slug: 'slug',
+    image: 'image',
+  };
+  const requiredKeys = Object.keys(requiredLabels);
+  if (updateId == null) {
+    for (const key of requiredKeys) {
+      if (!hasTextValue(body?.[key])) {
+        throw validationError(`${requiredLabels[key]} is required`);
+      }
+    }
+    return;
+  }
+
+  const [existing] = await sequelize.query(
+    `SELECT \`product_name\`, \`unit\`, \`slug\`, \`image\` FROM \`products\` WHERE \`${idCol}\` = :pkId`,
+    { type: QueryTypes.SELECT, replacements: { pkId: updateId } }
+  );
+  if (!existing) {
+    throw validationError('Product not found');
+  }
+
+  for (const key of requiredKeys) {
+    const value = body?.[key] !== undefined ? body[key] : existing[key];
+    if (!hasTextValue(value)) {
+      throw validationError(`${requiredLabels[key]} is required`);
+    }
+  }
 }
 
 /**
@@ -278,6 +326,7 @@ const api = (table, cols, idCol = 'id') => ({
   create: async (req, res) => {
     try {
       const body = req.body || {};
+      await assertProductRequiredFieldsOnWrite(table, idCol, body, null);
       const keys = cols.filter((c) => body[c] !== undefined);
       if (keys.length === 0) {
         return res.status(400).json({ success: false, error: 'No valid fields to insert' });
@@ -311,6 +360,7 @@ const api = (table, cols, idCol = 'id') => ({
   update: async (req, res) => {
     try {
       const body = req.body || {};
+      await assertProductRequiredFieldsOnWrite(table, idCol, body, req.params.id);
       const keys = cols.filter((c) => body[c] !== undefined && c !== idCol);
       if (keys.length === 0) {
         const [row] = await sequelize.query(

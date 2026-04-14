@@ -85,6 +85,47 @@ function parseJsonFromModelText(text) {
   return JSON.parse(t);
 }
 
+function normalizeExtractedUnit(rawValue) {
+  let value = String(rawValue || '').trim();
+  if (!value) return '';
+  value = value.replace(/\s+/g, ' ');
+
+  const boxMatch = value.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
+  if (boxMatch) return `${boxMatch[1]}items Box`;
+
+  value = value
+    .replace(/\b(gm|gms|gram|grams)\b/gi, 'g')
+    .replace(/\b(kg|kgs|kilogram|kilograms)\b/gi, 'kg')
+    .replace(/\b(mg|mgs|milligram|milligrams)\b/gi, 'mg')
+    .replace(/\b(ml|mls|milliliter|milliliters|millilitre|millilitres)\b/gi, 'ml')
+    .replace(/\b(l|lt|lts|liter|liters|litre|litres)\b/gi, 'l');
+
+  value = value.replace(/(\d+(?:\.\d+)?)\s*(kg|g|mg|ml|l)\b/gi, (_, n, u) => `${n}${String(u).toLowerCase()}`);
+  value = value.replace(/\s*[xX]\s*/g, 'x').replace(/\s+/g, ' ').trim();
+  return value;
+}
+
+function extractUnitFromName(productName) {
+  const text = String(productName || '').trim();
+  if (!text) return '';
+
+  const boxMatch = text.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
+  if (boxMatch) return `${boxMatch[1]}items Box`;
+
+  const multiPackMatch = text.match(
+    /(\d+)\s*[xX]\s*(\d+(?:\.\d+)?)\s*(kg|g|gm|grams?|mg|ml|l|lt|lit(?:er|re)s?)/i
+  );
+  if (multiPackMatch) {
+    return normalizeExtractedUnit(`${multiPackMatch[1]}x${multiPackMatch[2]}${multiPackMatch[3]}`);
+  }
+
+  const simpleMatch = text.match(/(\d+(?:\.\d+)?)\s*(kg|g|gm|grams?|mg|ml|l|lt|lit(?:er|re)s?)/i);
+  if (simpleMatch) {
+    return normalizeExtractedUnit(`${simpleMatch[1]}${simpleMatch[2]}`);
+  }
+  return '';
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function parseRetrySecondsFromMessage(msg) {
@@ -237,7 +278,10 @@ ${tagLines || '(none)'}`;
   const aiRaw = parseJsonFromModelText(text);
 
   const product_name = String(aiRaw.product_name || '').trim();
-  const unit = String(aiRaw.unit || '').trim();
+  let unit = normalizeExtractedUnit(aiRaw.unit);
+  if (!unit) {
+    unit = extractUnitFromName(product_name);
+  }
   const brand_text = String(aiRaw.brand_text || '').trim();
   const category_hints = Array.isArray(aiRaw.category_hints) ? aiRaw.category_hints.map(String) : [];
   const tag_hints = Array.isArray(aiRaw.tag_hints) ? aiRaw.tag_hints.map(String) : [];
