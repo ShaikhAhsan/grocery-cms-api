@@ -717,6 +717,24 @@ const PRODUCT_FILTER_FIELD_SQL = {
   updated_at: 'p.updated_at',
   image_updated_at: 'p.image_updated_at',
 };
+const PRODUCT_FILTER_TEXT_FIELDS = new Set([
+  'product_name',
+  'sku',
+  'slug',
+  'unit',
+  'image',
+  'thumb_image',
+]);
+const PRODUCT_FILTER_NUMERIC_FIELDS = new Set([
+  'brand_id',
+  'stock_quantity',
+  'minimum_qty',
+  'price',
+  'old_price',
+  'is_active',
+  'is_verified',
+  'is_deleted',
+]);
 
 function parseProductFiltersRaw(rawFilters) {
   if (rawFilters == null || rawFilters === '') return null;
@@ -746,64 +764,86 @@ function buildProductAdvancedFilterClause(rawFilters) {
     const column = PRODUCT_FILTER_FIELD_SQL[field];
     if (!column || !op) continue;
     const value = rule?.value;
+    const isTextField = PRODUCT_FILTER_TEXT_FIELDS.has(field);
+    const isNumericField = PRODUCT_FILTER_NUMERIC_FIELDS.has(field);
 
     const join = String(rule?.join || logic).trim().toUpperCase() === 'OR' ? 'OR' : 'AND';
     if (op === 'is_empty') {
-      compiledRules.push({ sql: `(${column} IS NULL OR TRIM(CAST(${column} AS CHAR)) = '')`, join });
+      compiledRules.push({
+        sql: isTextField ? `(${column} IS NULL OR TRIM(${column}) = '')` : `(${column} IS NULL)`,
+        join,
+      });
       continue;
     }
     if (op === 'is_not_empty') {
-      compiledRules.push({ sql: `(${column} IS NOT NULL AND TRIM(CAST(${column} AS CHAR)) <> '')`, join });
+      compiledRules.push({
+        sql: isTextField
+          ? `(${column} IS NOT NULL AND TRIM(${column}) <> '')`
+          : `(${column} IS NOT NULL)`,
+        join,
+      });
       continue;
     }
     if (op === 'contains') {
-      compiledRules.push({ sql: `CAST(${column} AS CHAR) LIKE ?`, join });
+      compiledRules.push({ sql: `${isTextField ? column : `CAST(${column} AS CHAR)`} LIKE ?`, join });
       replacements.push(`%${escapeSqlLikeFragment(String(value ?? ''))}%`);
       continue;
     }
     if (op === 'not_contains') {
-      compiledRules.push({ sql: `CAST(${column} AS CHAR) NOT LIKE ?`, join });
+      compiledRules.push({ sql: `${isTextField ? column : `CAST(${column} AS CHAR)`} NOT LIKE ?`, join });
       replacements.push(`%${escapeSqlLikeFragment(String(value ?? ''))}%`);
       continue;
     }
     if (op === 'starts_with') {
-      compiledRules.push({ sql: `CAST(${column} AS CHAR) LIKE ?`, join });
+      compiledRules.push({ sql: `${isTextField ? column : `CAST(${column} AS CHAR)`} LIKE ?`, join });
       replacements.push(`${escapeSqlLikeFragment(String(value ?? ''))}%`);
       continue;
     }
     if (op === 'ends_with') {
-      compiledRules.push({ sql: `CAST(${column} AS CHAR) LIKE ?`, join });
+      compiledRules.push({ sql: `${isTextField ? column : `CAST(${column} AS CHAR)`} LIKE ?`, join });
       replacements.push(`%${escapeSqlLikeFragment(String(value ?? ''))}`);
       continue;
     }
     if (op === 'eq') {
+      const eqValue = isNumericField ? Number(value) : value;
+      if (isNumericField && !Number.isFinite(eqValue)) continue;
       compiledRules.push({ sql: `${column} = ?`, join });
-      replacements.push(value);
+      replacements.push(eqValue);
       continue;
     }
     if (op === 'neq') {
+      const neqValue = isNumericField ? Number(value) : value;
+      if (isNumericField && !Number.isFinite(neqValue)) continue;
       compiledRules.push({ sql: `${column} <> ?`, join });
-      replacements.push(value);
+      replacements.push(neqValue);
       continue;
     }
     if (op === 'gt') {
+      const num = Number(value);
+      if (!Number.isFinite(num)) continue;
       compiledRules.push({ sql: `${column} > ?`, join });
-      replacements.push(value);
+      replacements.push(num);
       continue;
     }
     if (op === 'gte') {
+      const num = Number(value);
+      if (!Number.isFinite(num)) continue;
       compiledRules.push({ sql: `${column} >= ?`, join });
-      replacements.push(value);
+      replacements.push(num);
       continue;
     }
     if (op === 'lt') {
+      const num = Number(value);
+      if (!Number.isFinite(num)) continue;
       compiledRules.push({ sql: `${column} < ?`, join });
-      replacements.push(value);
+      replacements.push(num);
       continue;
     }
     if (op === 'lte') {
+      const num = Number(value);
+      if (!Number.isFinite(num)) continue;
       compiledRules.push({ sql: `${column} <= ?`, join });
-      replacements.push(value);
+      replacements.push(num);
       continue;
     }
     if (op === 'in' || op === 'not_in') {
@@ -814,12 +854,16 @@ function buildProductAdvancedFilterClause(rawFilters) {
             .map((v) => v.trim())
             .filter((v) => v !== '');
       if (!arr.length) continue;
-      const placeholders = arr.map(() => '?').join(', ');
+      const normalizedArr = isNumericField
+        ? arr.map((v) => Number(v)).filter((n) => Number.isFinite(n))
+        : arr;
+      if (!normalizedArr.length) continue;
+      const placeholders = normalizedArr.map(() => '?').join(', ');
       compiledRules.push({
         sql: `${column} ${op === 'not_in' ? 'NOT IN' : 'IN'} (${placeholders})`,
         join,
       });
-      replacements.push(...arr);
+      replacements.push(...normalizedArr);
       continue;
     }
   }
@@ -929,19 +973,31 @@ async function productsListEnriched(req, res) {
     const whereSql = whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : '';
 
     const order = productListOrderClause(req.query);
-    const fromJoin = 'FROM products p LEFT JOIN brand b ON b.id = p.brand_id';
+    const sortKey = String(req.query.sort || '').trim().toLowerCase();
+    const needsBrandJoin = sortKey === 'brand' || !!searchSql;
+    const fromJoin = needsBrandJoin
+      ? 'FROM products p LEFT JOIN brand b ON b.id = p.brand_id'
+      : 'FROM products p';
+    const brandSelectSql = needsBrandJoin
+      ? 'b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image'
+      : 'NULL AS _brand_name, NULL AS _brand_slug, NULL AS _brand_image';
 
-    const rows = await sequelize.query(
-      `SELECT p.*, b.name AS _brand_name, b.slug AS _brand_slug, b.image AS _brand_image
+    const rowsSql = `SELECT p.*, ${brandSelectSql}
        ${fromJoin}
        ${whereSql}${order}
-       LIMIT ? OFFSET ?`,
-      { type: QueryTypes.SELECT, replacements: [...whereReplacements, limit, offset] }
-    );
-    const [countRow] = await sequelize.query(
-      `SELECT COUNT(DISTINCT p.product_id) AS c ${fromJoin} ${whereSql}`,
-      { type: QueryTypes.SELECT, replacements: [...whereReplacements] }
-    );
+       LIMIT ? OFFSET ?`;
+    const countSql = `SELECT COUNT(*) AS c ${fromJoin} ${whereSql}`;
+    const [rows, countRows] = await Promise.all([
+      sequelize.query(rowsSql, {
+        type: QueryTypes.SELECT,
+        replacements: [...whereReplacements, limit, offset],
+      }),
+      sequelize.query(countSql, {
+        type: QueryTypes.SELECT,
+        replacements: [...whereReplacements],
+      }),
+    ]);
+    const countRow = countRows?.[0] || { c: 0 };
     const pids = rows.map((r) => r.product_id);
     const [catMap, tagMap] = await Promise.all([
       categoriesByProductIds(pids),
