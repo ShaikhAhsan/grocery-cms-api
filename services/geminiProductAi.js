@@ -15,6 +15,18 @@ const VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
 const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
 /** Retries when Google returns 429 / quota with "retry in Ns" (default 3). Set 1 to disable extra attempts. */
 const QUOTA_RETRIES = Math.min(6, Math.max(1, parseInt(process.env.GEMINI_QUOTA_RETRIES || '3', 10)));
+const REQUEST_TIMEOUT_MS = Math.min(
+  180000,
+  Math.max(4000, parseInt(process.env.GEMINI_REQUEST_TIMEOUT_MS || '45000', 10))
+);
+const GEMINI_MAX_ATTEMPTS = Math.min(
+  8,
+  Math.max(1, parseInt(process.env.GEMINI_MAX_ATTEMPTS || String(QUOTA_RETRIES + 1), 10))
+);
+const TAXONOMY_CACHE_TTL_MS = Math.min(
+  600000,
+  Math.max(5000, parseInt(process.env.GEMINI_TAXONOMY_CACHE_TTL_MS || '120000', 10))
+);
 
 const LISTING_IMAGE_PROMPT = `Using the attached product photo, produce a single square e-commerce product image suitable for an online store listing.
 
@@ -62,6 +74,35 @@ async function loadTagRows() {
   return rows;
 }
 
+const taxonomyCache = {
+  loadedAt: 0,
+  brands: null,
+  categories: null,
+  tags: null,
+};
+
+async function loadTaxonomyRowsCached() {
+  const now = Date.now();
+  const fresh = now - taxonomyCache.loadedAt < TAXONOMY_CACHE_TTL_MS;
+  if (fresh && taxonomyCache.brands && taxonomyCache.categories && taxonomyCache.tags) {
+    return {
+      brands: taxonomyCache.brands,
+      categories: taxonomyCache.categories,
+      tags: taxonomyCache.tags,
+    };
+  }
+  const [brands, categories, tags] = await Promise.all([
+    loadBrandRows(),
+    loadCategoryRows(),
+    loadTagRows(),
+  ]);
+  taxonomyCache.loadedAt = now;
+  taxonomyCache.brands = brands;
+  taxonomyCache.categories = categories;
+  taxonomyCache.tags = tags;
+  return { brands, categories, tags };
+}
+
 function matchRowByName(name, rows, nameKey = 'name') {
   const n = normalizeLabel(name);
   if (!n) return null;
@@ -90,8 +131,8 @@ function normalizeExtractedUnit(rawValue) {
   if (!value) return '';
   value = value.replace(/\s+/g, ' ');
 
-  const boxMatch = value.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
-  if (boxMatch) return `${boxMatch[1]}items Box`;
+  const pieceMatch = value.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
+  if (pieceMatch) return `${pieceMatch[1]}Pcs`;
 
   value = value
     .replace(/\b(gm|gms|gram|grams)\b/gi, 'g')
@@ -109,8 +150,8 @@ function extractUnitFromName(productName) {
   const text = String(productName || '').trim();
   if (!text) return '';
 
-  const boxMatch = text.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
-  if (boxMatch) return `${boxMatch[1]}items Box`;
+  const pieceMatch = text.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
+  if (pieceMatch) return `${pieceMatch[1]}Pcs`;
 
   const multiPackMatch = text.match(
     /(\d+)\s*[xX]\s*(\d+(?:\.\d+)?)\s*(kg|g|gm|grams?|mg|ml|l|lt|lit(?:er|re)s?)/i
@@ -157,6 +198,17 @@ function removeUnitFromName(productName, unit) {
     const [, n, u] = compact;
     const qtyLoose = new RegExp(`(?:^|\\s|\\(|\\[|-)${escapeRegex(n)}\\s*${escapeRegex(u)}(?:\\s|\\)|\\]|$|,)`, 'ig');
     name = name.replace(qtyLoose, ' ');
+  }
+
+  // Strip piece-count variants like "3 piece", "3 pcs", "3 items", "3 piece pack".
+  const pcs = normalizedUnit.match(/^(\d+)pcs$/i);
+  if (pcs) {
+    const qty = pcs[1];
+    const pcsLoose = new RegExp(
+      `(?:^|\\s|\\(|\\[|-)${escapeRegex(qty)}\\s*(?:pcs?|pieces?|items?)\\b(?:\\s*(?:box|pack))?(?:\\s|\\)|\\]|$|,)`,
+      'ig'
+    );
+    name = name.replace(pcsLoose, ' ');
   }
 
   return name.replace(/\s+/g, ' ').replace(/^[\s,;:|/-]+|[\s,;:|/-]+$/g, '').trim();
@@ -234,6 +286,19 @@ function isQuotaOrRateLimit(httpStatus, message, json) {
   return /RESOURCE_EXHAUSTED|quota exceeded|rate limit|too many requests/i.test(m);
 }
 
+function isRetryableTransportError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  if (['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ENETUNREACH', 'ECONNREFUSED'].includes(code)) {
+    return true;
+  }
+  const msg = String(err?.message || '');
+  return /network|timed out|timeout|socket hang up|temporarily unavailable/i.test(msg);
+}
+
+function isRetryableHttpStatus(httpStatus) {
+  return httpStatus === 408 || httpStatus === 425 || httpStatus === 429 || httpStatus >= 500;
+}
+
 function quotaHintFooter(message) {
   const m = String(message || '');
   if (!/quota|limit:\s*0|billing|RESOURCE_EXHAUSTED|rate limit/i.test(m)) return '';
@@ -249,33 +314,57 @@ async function geminiGenerateContent(model, body) {
   const url = `${BASE}/${model}:generateContent?key=${encodeURIComponent(key)}`;
 
   let lastMsg = '';
-  for (let attempt = 0; attempt < QUOTA_RETRIES; attempt += 1) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const rawText = await res.text();
+  for (let attempt = 0; attempt < GEMINI_MAX_ATTEMPTS; attempt += 1) {
+    let res;
+    let rawText = '';
     let json = {};
+    let timer = null;
+    try {
+      const controller = new AbortController();
+      timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (timer) clearTimeout(timer);
+      rawText = await res.text();
+    } catch (err) {
+      if (timer) clearTimeout(timer);
+      const transportRetryable = isRetryableTransportError(err);
+      if (attempt < GEMINI_MAX_ATTEMPTS - 1 && transportRetryable) {
+        const delayMs = Math.min(30000, 600 * 2 ** attempt + Math.floor(Math.random() * 300));
+        await sleep(delayMs);
+        continue;
+      }
+      throw err;
+    }
+
     try {
       json = rawText ? JSON.parse(rawText) : {};
     } catch {
-      throw new Error(`Gemini invalid JSON: ${rawText.slice(0, 200)}`);
+      const err = new Error(`Gemini invalid JSON: ${rawText.slice(0, 200)}`);
+      err.code = 'PARSE_FAILED';
+      throw err;
     }
     if (res.ok) return json;
 
     lastMsg = json.error?.message || json.message || rawText.slice(0, 1200);
-    const retryable = isQuotaOrRateLimit(res.status, lastMsg, json);
-    if (retryable && attempt < QUOTA_RETRIES - 1) {
+    const quotaRetryable = isQuotaOrRateLimit(res.status, lastMsg, json);
+    const statusRetryable = isRetryableHttpStatus(res.status);
+    if ((quotaRetryable || statusRetryable) && attempt < GEMINI_MAX_ATTEMPTS - 1) {
       const waitSec = parseRetrySecondsFromMessage(lastMsg);
-      const delayMs =
-        waitSec != null ? waitSec * 1000 + 250 : Math.min(30000, 1800 * 2 ** attempt);
+      const backoff = Math.min(30000, 1800 * 2 ** attempt);
+      const jitter = Math.floor(Math.random() * 400);
+      const delayMs = waitSec != null ? waitSec * 1000 + 250 : backoff + jitter;
       await sleep(delayMs);
       continue;
     }
-    break;
+    const err = new Error(lastMsg || `Gemini request failed (HTTP ${res.status})`);
+    err.httpStatus = res.status;
+    throw err;
   }
-
   throw new Error((lastMsg || 'Gemini request failed') + quotaHintFooter(lastMsg));
 }
 
@@ -287,6 +376,53 @@ function concatTextParts(response) {
   }
   const parts = cands[0].content?.parts || [];
   return parts.map((p) => p.text || '').join('').trim();
+}
+
+function sanitizeHintList(input, maxCount) {
+  const arr = Array.isArray(input) ? input.map((v) => String(v || '').trim()) : [];
+  const deduped = [];
+  const seen = new Set();
+  for (const item of arr) {
+    if (!item) continue;
+    const key = normalizeLabel(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item.slice(0, 120));
+    if (deduped.length >= maxCount) break;
+  }
+  return deduped;
+}
+
+function validateAiRawPayload(aiRaw) {
+  if (!aiRaw || typeof aiRaw !== 'object') {
+    const err = new Error('Model output is not a JSON object');
+    err.code = 'PARSE_FAILED';
+    throw err;
+  }
+  return {
+    product_name: String(aiRaw.product_name || '').trim(),
+    image_text_product_name: String(aiRaw.image_text_product_name || '').trim(),
+    suggested_product_name: String(aiRaw.suggested_product_name || '').trim(),
+    unit: String(aiRaw.unit || '').trim(),
+    brand_text: String(aiRaw.brand_text || '').trim(),
+    category_hints: sanitizeHintList(aiRaw.category_hints, 5),
+    tag_hints: sanitizeHintList(aiRaw.tag_hints, 10),
+    notes: String(aiRaw.notes || '').trim().slice(0, 300),
+  };
+}
+
+function dedupeNameOptions(options) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of options || []) {
+    const value = String(raw || '').trim();
+    if (!value) continue;
+    const key = normalizeLabel(value);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
 }
 
 function extractFirstInlineImage(response) {
@@ -313,9 +449,7 @@ function extractFirstInlineImage(response) {
  */
 async function extractProductFromImage(imageBuffer, mimeType, options = {}) {
   const existingProductName = String(options?.existingProductName || '').trim();
-  const brands = await loadBrandRows();
-  const categories = await loadCategoryRows();
-  const tags = await loadTagRows();
+  const { brands, categories, tags } = await loadTaxonomyRowsCached();
 
   const brandLines = brands.map((b) => `- ${b.name}`).join('\n');
   const catLines = categories.map((c) => `- ${c.category_name}`).join('\n');
@@ -325,8 +459,10 @@ async function extractProductFromImage(imageBuffer, mimeType, options = {}) {
 
 Return ONLY valid JSON (no markdown fences) with this exact structure:
 {
-  "product_name": "string — full product title as it should appear in the catalog; include variant (flavor, size, multipack) as part of the name when visible",
-  "unit": "string — quantity + unit only, e.g. 500 ml, 1 kg, 6 x 330 ml; empty string if unclear",
+  "image_text_product_name": "string — product name read from packaging text exactly/as-close-as-possible (may include OCR noise)",
+  "suggested_product_name": "string — cleaned catalog-ready name with corrected spelling/wording based on what is visible (better than raw OCR text)",
+  "product_name": "string — same as suggested_product_name for backward compatibility",
+  "unit": "string — quantity + unit only, e.g. 500 ml, 1 kg, 6 x 330 ml, 3Pcs; empty string if unclear",
   "brand_text": "string — brand name read from packaging, or empty if unknown",
   "category_hints": ["0 to 5 short category names that fit this product"],
   "tag_hints": ["0 to 10 short search tags"],
@@ -335,6 +471,9 @@ Return ONLY valid JSON (no markdown fences) with this exact structure:
 
 Rules:
 - Prefer spelling that matches one of the lists below when the product clearly matches.
+- If OCR text has obvious typo/noise (example: "Pich"), fix it in suggested_product_name (example: "Pick").
+- For count-based non-weight/non-volume packs (piece/item/pcs), output unit as NPcs (example: 3Pcs).
+- If unit already captures the count, do not repeat it in suggested_product_name (prefer "Glass Pack", not "Glass Pack 3 Piece").
 - Do not invent a brand; only use brand_text visible on the pack or leave empty.
 - category_hints and tag_hints should use names from the lists when appropriate; you may suggest new short labels only when nothing fits.
 
@@ -369,20 +508,41 @@ ${existingProductName || '(empty)'}`;
 
   const response = await geminiGenerateContent(VISION_MODEL, body);
   const text = concatTextParts(response);
-  const aiRaw = parseJsonFromModelText(text);
+  const aiRaw = validateAiRawPayload(parseJsonFromModelText(text));
 
-  const aiProductName = String(aiRaw.product_name || '').trim();
+  const aiImageTextName = aiRaw.image_text_product_name || aiRaw.product_name;
+  const aiSuggestedName = aiRaw.suggested_product_name || aiRaw.product_name || aiImageTextName;
+  const aiProductName = aiSuggestedName;
   let unit = normalizeExtractedUnit(aiRaw.unit);
   if (!unit) {
-    unit = extractUnitFromName(aiProductName) || extractUnitFromName(existingProductName);
+    unit =
+      extractUnitFromName(aiSuggestedName) ||
+      extractUnitFromName(aiImageTextName) ||
+      extractUnitFromName(existingProductName);
   }
   const chosenName = shouldPreferExistingProductName(aiProductName, existingProductName)
     ? existingProductName
     : aiProductName;
   const product_name = normalizeSuggestedProductName(chosenName, unit, existingProductName);
-  const brand_text = String(aiRaw.brand_text || '').trim();
-  const category_hints = Array.isArray(aiRaw.category_hints) ? aiRaw.category_hints.map(String) : [];
-  const tag_hints = Array.isArray(aiRaw.tag_hints) ? aiRaw.tag_hints.map(String) : [];
+  const normalizedSuggestedName = normalizeSuggestedProductName(
+    aiSuggestedName,
+    unit,
+    existingProductName
+  );
+  const normalizedImageTextName = normalizeSuggestedProductName(
+    aiImageTextName,
+    unit,
+    existingProductName
+  );
+  const name_options = dedupeNameOptions([
+    product_name,
+    normalizedSuggestedName,
+    normalizedImageTextName,
+    existingProductName,
+  ]);
+  const brand_text = aiRaw.brand_text;
+  const category_hints = aiRaw.category_hints;
+  const tag_hints = aiRaw.tag_hints;
 
   const brandRow = brand_text ? matchRowByName(brand_text, brands, 'name') : null;
   const proposedBrand = brand_text
@@ -423,6 +583,7 @@ ${existingProductName || '(empty)'}`;
     aiRaw,
     proposed: {
       product_name,
+      name_options,
       unit,
       brand: proposedBrand,
       categories: proposedCategories,
