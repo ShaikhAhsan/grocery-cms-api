@@ -56,7 +56,7 @@ function normalizeLabel(s) {
 
 async function loadBrandRows() {
   const rows = await sequelize.query(
-    `SELECT id, name FROM brand WHERE (is_deleted = 0 OR is_deleted IS NULL) ORDER BY name ASC LIMIT 500`,
+    `SELECT id, name FROM brand WHERE (is_deleted = 0 OR is_deleted IS NULL) ORDER BY name ASC LIMIT 50000`,
     { type: QueryTypes.SELECT }
   );
   return rows;
@@ -64,7 +64,7 @@ async function loadBrandRows() {
 
 async function loadCategoryRows() {
   const rows = await sequelize.query(
-    `SELECT category_id, category_name, slug FROM categories WHERE (is_deleted = 0 OR is_deleted IS NULL) ORDER BY category_name ASC LIMIT 500`,
+    `SELECT category_id, category_name, slug FROM categories WHERE (is_deleted = 0 OR is_deleted IS NULL) ORDER BY category_name ASC LIMIT 50000`,
     { type: QueryTypes.SELECT }
   );
   return rows;
@@ -72,7 +72,7 @@ async function loadCategoryRows() {
 
 async function loadTagRows() {
   const rows = await sequelize.query(
-    `SELECT id, name FROM tags ORDER BY name ASC LIMIT 500`,
+    `SELECT id, name FROM tags ORDER BY name ASC LIMIT 20000`,
     { type: QueryTypes.SELECT }
   );
   return rows;
@@ -403,6 +403,130 @@ function sanitizeHintList(input, maxCount) {
   return deduped;
 }
 
+/** Single-word color tokens — not valid as standalone product tags. */
+const STANDALONE_COLOR_WORDS = new Set([
+  'red',
+  'green',
+  'blue',
+  'yellow',
+  'black',
+  'white',
+  'pink',
+  'orange',
+  'purple',
+  'brown',
+  'gray',
+  'grey',
+  'gold',
+  'silver',
+  'beige',
+  'navy',
+  'maroon',
+  'teal',
+  'cyan',
+  'magenta',
+  'violet',
+  'lime',
+  'olive',
+]);
+
+const TAG_STOPWORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'from',
+  'pack',
+  'size',
+  'new',
+  'all',
+  'per',
+  'x',
+  'of',
+  'a',
+  'an',
+]);
+
+function tokenizeMeaningful(text) {
+  return normalizeLabel(text)
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 2 && !TAG_STOPWORDS.has(w));
+}
+
+/** Reject tags that look like units / pack sizes (belong in "unit", not tags). */
+function isUnitLikeTagLabel(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return true;
+  const compact = s.replace(/\s+/g, '').toLowerCase();
+  if (/^1p$/i.test(compact) || /^[1-9]\d*pcs?$/i.test(compact)) return true;
+  if (/^\d+(\.\d+)?(g|kg|mg|ml|l|oz|lb)s?$/i.test(compact)) return true;
+  if (/^\d+\s*x\s*\d+/i.test(s)) return true;
+  const n = normalizeLabel(s);
+  if (/^\d+$/.test(n.replace(/\s/g, ''))) return true;
+  if (/^(1pc|1\s*pc|1\s*p)$/i.test(s.trim())) return true;
+  return false;
+}
+
+function isStandaloneColorTag(raw) {
+  const t = normalizeLabel(String(raw || '').trim());
+  if (!t || t.includes(' ')) return false;
+  return STANDALONE_COLOR_WORDS.has(t);
+}
+
+function isTagMatchingAnyBrandName(tagName, brands) {
+  const tn = normalizeLabel(tagName);
+  if (!tn) return false;
+  for (const b of brands || []) {
+    const bn = normalizeLabel(b?.name);
+    if (bn && bn === tn) return true;
+  }
+  return false;
+}
+
+/**
+ * Tag must be plausibly about THIS product: share meaningful tokens with product name
+ * or with assigned categories — drops unrelated catalog noise (e.g. insecticide + "baby powder").
+ */
+function tagRelevantToProduct(tagName, productName, categoryNames) {
+  const tagToks = new Set(tokenizeMeaningful(tagName));
+  if (tagToks.size === 0) return false;
+  const productToks = new Set(tokenizeMeaningful(productName));
+  const catToks = new Set();
+  for (const c of categoryNames || []) {
+    for (const t of tokenizeMeaningful(c)) catToks.add(t);
+  }
+  const productLower = normalizeLabel(productName);
+  const tagLower = normalizeLabel(tagName);
+  if (tagLower.length >= 4 && (productLower.includes(tagLower) || tagLower.includes(productLower))) {
+    return true;
+  }
+  for (const tt of tagToks) {
+    if (tt.length < 3) continue;
+    if (productToks.has(tt) || catToks.has(tt)) return true;
+    for (const pt of productToks) {
+      if (pt.includes(tt) || tt.includes(pt)) return true;
+    }
+    for (const ct of catToks) {
+      if (ct.includes(tt) || tt.includes(ct)) return true;
+    }
+  }
+  return false;
+}
+
+function dedupeProposedTagsById(list) {
+  const seen = new Set();
+  const out = [];
+  for (const t of list || []) {
+    const id = t?.id;
+    if (id == null) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(t);
+  }
+  return out;
+}
+
 function validateAiRawPayload(aiRaw) {
   if (!aiRaw || typeof aiRaw !== 'object') {
     const err = new Error('Model output is not a JSON object');
@@ -416,7 +540,7 @@ function validateAiRawPayload(aiRaw) {
     unit: String(aiRaw.unit || '').trim(),
     brand_text: String(aiRaw.brand_text || '').trim(),
     category_hints: sanitizeHintList(aiRaw.category_hints, 5),
-    tag_hints: sanitizeHintList(aiRaw.tag_hints, 10),
+    tag_hints: sanitizeHintList(aiRaw.tag_hints, 8),
     notes: String(aiRaw.notes || '').trim().slice(0, 300),
   };
 }
@@ -474,8 +598,8 @@ Return ONLY valid JSON (no markdown fences) with this exact structure:
   "product_name": "string — same as suggested_product_name for backward compatibility",
   "unit": "string — quantity + unit only, e.g. 500 ml, 1 kg, 6 x 330 ml, 1Pc, 3Pcs; empty string if unclear",
   "brand_text": "string — brand name read from packaging, or empty if unknown",
-  "category_hints": ["0 to 5 short category names that fit this product"],
-  "tag_hints": ["0 to 10 short search tags"],
+  "category_hints": ["0 to 5 names — MUST be chosen only from the Existing categories list below when possible; pick categories that clearly match THIS product only"],
+  "tag_hints": ["3 to 8 entries — CRITICAL: each string MUST be copied exactly from the Existing tags list below (same spelling). Only include tags that are 100% relevant to this exact product type and the categories you chose. If unsure, use fewer tags or an empty array"],
   "notes": "optional — visible claims or bilingual text worth knowing; may be empty string"
 }
 
@@ -485,15 +609,18 @@ Rules:
 - For count-based non-weight/non-volume packs (piece/item/pcs), output unit as 1Pc when quantity is 1, otherwise NPcs (example: 3Pcs).
 - If unit already captures the count, do not repeat it in suggested_product_name (prefer "Glass Pack", not "Glass Pack 3 Piece").
 - Do not invent a brand; only use brand_text visible on the pack or leave empty.
-- category_hints and tag_hints should use names from the lists when appropriate; you may suggest new short labels only when nothing fits.
+- NEVER put pack sizes, weights, counts, or units in tag_hints (no "1P", "100g", "500ml", "1Pc", "3Pcs", etc.) — those belong ONLY in "unit".
+- NEVER put brand names, company names, or standalone colors (red, green, blue, …) in tag_hints.
+- tag_hints must describe product type, use case, diet, or audience — only for THIS product. Do NOT attach unrelated tags (e.g. do not suggest baby-care tags for insecticide, or food tags for non-food unless clearly correct).
+- category_hints: prefer entries from the Existing categories list; only suggest a new category name if nothing in the list fits, and it must still match what is visible.
 
-Existing brands (prefer exact or closest match):
+Existing brands (for brand_text only — do not repeat in tag_hints):
 ${brandLines || '(none)'}
 
 Existing categories:
 ${catLines || '(none)'}
 
-Existing tags:
+Existing tags (tag_hints MUST be copied from this list only; omit tags if none apply):
 ${tagLines || '(none)'}
 
 Current draft product name from CMS (use this when image text is unclear, but normalize it):
@@ -511,7 +638,7 @@ ${existingProductName || '(empty)'}`;
       },
     ],
     generationConfig: {
-      temperature: 0.2,
+      temperature: 0.15,
       maxOutputTokens: 2048,
     },
   };
@@ -577,17 +704,30 @@ ${existingProductName || '(empty)'}`;
     }
   }
 
+  const categoryNamesForTagContext = proposedCategories.map((c) => String(c.name || '').trim()).filter(Boolean);
+
   const proposedTags = [];
   for (const hint of tag_hints) {
     const h = String(hint || '').trim();
     if (!h) continue;
+    if (isUnitLikeTagLabel(h)) continue;
+    if (isStandaloneColorTag(h)) continue;
+    const brandNorm = brand_text ? normalizeLabel(brand_text) : '';
+    if (brandNorm && normalizeLabel(h) === brandNorm) continue;
+
     const row = matchRowByName(h, tags, 'name');
-    if (row) {
-      proposedTags.push({ mode: 'matched', id: row.id, name: row.name });
-    } else {
-      proposedTags.push({ mode: 'new', id: null, name: h });
+    if (!row) {
+      continue;
     }
+    if (isTagMatchingAnyBrandName(row.name, brands)) continue;
+    if (isUnitLikeTagLabel(row.name)) continue;
+    if (isStandaloneColorTag(row.name)) continue;
+    if (!tagRelevantToProduct(row.name, product_name, categoryNamesForTagContext)) continue;
+
+    proposedTags.push({ mode: 'matched', id: row.id, name: row.name });
   }
+
+  const proposedTagsDeduped = dedupeProposedTagsById(proposedTags);
 
   return {
     aiRaw,
@@ -597,7 +737,7 @@ ${existingProductName || '(empty)'}`;
       unit,
       brand: proposedBrand,
       categories: proposedCategories,
-      tags: proposedTags,
+      tags: proposedTagsDeduped,
     },
   };
 }
