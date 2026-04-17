@@ -132,7 +132,10 @@ function normalizeExtractedUnit(rawValue) {
   value = value.replace(/\s+/g, ' ');
 
   const pieceMatch = value.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
-  if (pieceMatch) return `${pieceMatch[1]}Pcs`;
+  if (pieceMatch) {
+    const qty = Number(pieceMatch[1]);
+    return qty === 1 ? '1Pc' : `${pieceMatch[1]}Pcs`;
+  }
 
   value = value
     .replace(/\b(gm|gms|gram|grams)\b/gi, 'g')
@@ -151,7 +154,10 @@ function extractUnitFromName(productName) {
   if (!text) return '';
 
   const pieceMatch = text.match(/(\d+)\s*(?:x\s*)?(?:items?|pcs?|pieces?)\b(?:\s*(?:box|pack))?/i);
-  if (pieceMatch) return `${pieceMatch[1]}Pcs`;
+  if (pieceMatch) {
+    const qty = Number(pieceMatch[1]);
+    return qty === 1 ? '1Pc' : `${pieceMatch[1]}Pcs`;
+  }
 
   const multiPackMatch = text.match(
     /(\d+)\s*[xX]\s*(\d+(?:\.\d+)?)\s*(kg|g|gm|grams?|mg|ml|l|lt|lit(?:er|re)s?)/i
@@ -201,7 +207,7 @@ function removeUnitFromName(productName, unit) {
   }
 
   // Strip piece-count variants like "3 piece", "3 pcs", "3 items", "3 piece pack".
-  const pcs = normalizedUnit.match(/^(\d+)pcs$/i);
+  const pcs = normalizedUnit.match(/^(\d+)pcs?$/i);
   if (pcs) {
     const qty = pcs[1];
     const pcsLoose = new RegExp(
@@ -462,7 +468,7 @@ Return ONLY valid JSON (no markdown fences) with this exact structure:
   "image_text_product_name": "string — product name read from packaging text exactly/as-close-as-possible (may include OCR noise)",
   "suggested_product_name": "string — cleaned catalog-ready name with corrected spelling/wording based on what is visible (better than raw OCR text)",
   "product_name": "string — same as suggested_product_name for backward compatibility",
-  "unit": "string — quantity + unit only, e.g. 500 ml, 1 kg, 6 x 330 ml, 3Pcs; empty string if unclear",
+  "unit": "string — quantity + unit only, e.g. 500 ml, 1 kg, 6 x 330 ml, 1Pc, 3Pcs; empty string if unclear",
   "brand_text": "string — brand name read from packaging, or empty if unknown",
   "category_hints": ["0 to 5 short category names that fit this product"],
   "tag_hints": ["0 to 10 short search tags"],
@@ -472,7 +478,7 @@ Return ONLY valid JSON (no markdown fences) with this exact structure:
 Rules:
 - Prefer spelling that matches one of the lists below when the product clearly matches.
 - If OCR text has obvious typo/noise (example: "Pich"), fix it in suggested_product_name (example: "Pick").
-- For count-based non-weight/non-volume packs (piece/item/pcs), output unit as NPcs (example: 3Pcs).
+- For count-based non-weight/non-volume packs (piece/item/pcs), output unit as 1Pc when quantity is 1, otherwise NPcs (example: 3Pcs).
 - If unit already captures the count, do not repeat it in suggested_product_name (prefer "Glass Pack", not "Glass Pack 3 Piece").
 - Do not invent a brand; only use brand_text visible on the pack or leave empty.
 - category_hints and tag_hints should use names from the lists when appropriate; you may suggest new short labels only when nothing fits.

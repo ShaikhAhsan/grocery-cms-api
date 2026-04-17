@@ -274,6 +274,8 @@ const api = (table, cols, idCol = 'id') => ({
 const PRODUCT_LIST_SORT_SQL = {
   product_name: 'p.product_name',
   image_updated_at: 'p.image_updated_at',
+  created_at: 'p.created_at',
+  updated_at: 'p.updated_at',
   unit: 'p.unit',
   brand: 'b.name',
   old_price: 'p.old_price',
