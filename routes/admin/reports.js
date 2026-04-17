@@ -1,6 +1,7 @@
 const express = require('express');
 const { sequelize } = require('../../config/database');
 const { QueryTypes } = require('sequelize');
+const { publicApiErrorMessage } = require('../../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -212,7 +213,7 @@ router.get('/reports', async (req, res) => {
     );
     return res.json({ success: true, data: rows.map(parseReportRow) });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -228,7 +229,7 @@ router.get('/reports/dashboard', async (req, res) => {
     );
     return res.json({ success: true, data: rows.map(parseReportRow) });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -248,7 +249,7 @@ router.get('/reports/slug/:slug', async (req, res) => {
     if (!row) return res.status(404).json({ success: false, error: 'Report not found' });
     return res.json({ success: true, data: parseReportRow(row) });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -270,7 +271,7 @@ router.get('/reports/:reportId', async (req, res) => {
     if (!row) return res.status(404).json({ success: false, error: 'Report not found' });
     return res.json({ success: true, data: parseReportRow(row) });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -325,7 +326,7 @@ router.post('/reports', async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(409).json({ success: false, error: 'Report slug already exists' });
     }
-    return res.status(400).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -394,7 +395,7 @@ router.put('/reports/:reportId', async (req, res) => {
     if (isDuplicateKeyError(err)) {
       return res.status(409).json({ success: false, error: 'Report slug already exists' });
     }
-    return res.status(400).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -410,7 +411,7 @@ router.delete('/reports/:reportId', async (req, res) => {
     if (!affected) return res.status(404).json({ success: false, error: 'Report not found' });
     return res.json({ success: true, deleted: true });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -466,7 +467,7 @@ router.post('/reports/:reportId/run', async (req, res) => {
       },
     });
   } catch (err) {
-    return res.status(400).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -522,7 +523,7 @@ router.post('/reports/slug/:slug/run', async (req, res) => {
       },
     });
   } catch (err) {
-    return res.status(400).json({ success: false, error: err.message });
+    return res.status(400).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 

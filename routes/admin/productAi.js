@@ -3,6 +3,7 @@ const http = require('http');
 const https = require('https');
 const axios = require('axios');
 const geminiProductAi = require('../../services/geminiProductAi');
+const { publicApiErrorMessage } = require('../../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -219,7 +220,7 @@ router.post('/ai/product/extract-from-image-bulk', async (req, res) => {
       },
     });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message || 'Bulk AI extract failed' });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err, 'Bulk AI extract failed') });
   }
 });
 

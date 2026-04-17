@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const { sequelize } = require('../config/database');
 const { QueryTypes } = require('sequelize');
 const { processImageUrl } = require('../utils/helpers');
+const { publicApiErrorMessage } = require('../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -145,7 +146,7 @@ router.get('/from-uploads', async (req, res) => {
       message: 'Image found on disk; URLs use public_base + relative path',
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -187,7 +188,7 @@ router.post('/map', async (req, res) => {
 
     res.json({ status: 'success', updatedCount: updates.length, updatedSkus: updates });
   } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    res.status(500).json({ status: 'error', message: publicApiErrorMessage(err) });
   }
 });
 

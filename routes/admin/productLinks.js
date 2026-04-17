@@ -1,6 +1,7 @@
 const express = require('express');
 const { sequelize } = require('../../config/database');
 const { QueryTypes } = require('sequelize');
+const { publicApiErrorMessage } = require('../../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -20,7 +21,7 @@ router.get('/brand-product-count/:id', async (req, res) => {
     );
     return res.json({ success: true, data: { count: Number(row?.c ?? 0) } });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -40,7 +41,7 @@ router.get('/products/:productId/category-links', async (req, res) => {
     );
     return res.json({ success: true, data: rows });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -70,7 +71,7 @@ router.put('/products/:productId/category-links', async (req, res) => {
     return res.json({ success: true });
   } catch (err) {
     if (t) await t.rollback();
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -113,7 +114,7 @@ router.post('/products/:productId/category-links/append', async (req, res) => {
       data: { appended: true, category_ids: rows.map((r) => r.category_id) },
     });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -133,7 +134,7 @@ router.get('/products/:productId/tag-links', async (req, res) => {
     );
     return res.json({ success: true, data: rows });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -163,7 +164,7 @@ router.put('/products/:productId/tag-links', async (req, res) => {
     return res.json({ success: true });
   } catch (err) {
     if (t) await t.rollback();
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -195,7 +196,7 @@ router.post('/products/:productId/tag-links/append', async (req, res) => {
     );
     return res.json({ success: true, data: { appended: true, tag_ids: rows.map((r) => r.tag_id) } });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 

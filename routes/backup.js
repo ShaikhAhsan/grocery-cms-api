@@ -62,7 +62,7 @@ router.get('/backup-products', async (req, res) => {
     }
     successResponse(res, null, 'Products backed up successfully.');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -95,7 +95,7 @@ router.get('/backup-brands', async (req, res) => {
     }
     successResponse(res, null, 'Brands backed up successfully.');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 

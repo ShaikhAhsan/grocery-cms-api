@@ -5,6 +5,7 @@ const express = require('express');
 const { sequelize } = require('../../config/database');
 const { QueryTypes } = require('sequelize');
 const { successResponse, errorResponse } = require('../../utils/responseHandler');
+const { publicApiErrorMessage } = require('../../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -53,12 +54,12 @@ router.get('/fetch-missing-images', async (req, res) => {
           results.push({ sku: product.sku, status: 'not_found' });
         }
       } catch (err) {
-        results.push({ sku: product.sku, status: 'error', error: err.message });
+        results.push({ sku: product.sku, status: 'error', error: publicApiErrorMessage(err) });
       }
     }
     successResponse(res, results, 'Image fetch process completed');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 

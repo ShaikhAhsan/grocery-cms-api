@@ -2,6 +2,7 @@ const express = require('express');
 const { sequelize } = require('../../config/database');
 const { QueryTypes } = require('sequelize');
 const schema = require('../../db_schema.json');
+const { publicApiErrorMessage } = require('../../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -47,12 +48,12 @@ function duplicateKeyMeta(err, table) {
 
 function respondWriteError(err, res, table) {
   if (err?.status === 400 || err?.code === 'VALIDATION_ERROR') {
-    return res.status(400).json({ success: false, error: err.message || 'Validation failed' });
+    return res.status(400).json({ success: false, error: publicApiErrorMessage(err, 'Validation failed') });
   }
   if (err.duplicateField) {
     return res.status(409).json({
       success: false,
-      error: err.message || 'This value already exists.',
+      error: publicApiErrorMessage(err, 'This value already exists.'),
       code: 'DUPLICATE_ENTRY',
       duplicateField: err.duplicateField,
     });
@@ -66,7 +67,7 @@ function respondWriteError(err, res, table) {
       duplicateField,
     });
   }
-  return res.status(500).json({ success: false, error: err.message });
+  return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
 }
 
 function validationError(messageText) {
@@ -136,15 +137,28 @@ async function assertSlugUnique(table, cols, idCol, slugValue, excludePkId) {
   }
 }
 
+/** Small reference tables: CMS loads full lists without `limit`; default 500 was too low for brand. */
+function listLimitBounds(table) {
+  if (table === 'brand' || table === 'categories' || table === 'tags') {
+    return { defaultLimit: 50000, maxLimit: 200000 };
+  }
+  return { defaultLimit: 500, maxLimit: 20000 };
+}
+
 const api = (table, cols, idCol = 'id') => ({
   list: async (req, res) => {
     try {
-      const { limit = 500, offset = 0 } = req.query;
+      const { defaultLimit, maxLimit } = listLimitBounds(table);
+      const offsetRaw = parseInt(req.query.offset, 10);
+      const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+      const limitRaw = req.query.limit != null ? parseInt(req.query.limit, 10) : defaultLimit;
+      const limit =
+        Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, maxLimit) : defaultLimit;
       const where = req.query.where ? ` WHERE ${req.query.where}` : '';
       const order = req.query.orderBy ? ` ORDER BY ${req.query.orderBy}` : ` ORDER BY \`${idCol}\``;
       const rows = await sequelize.query(
         `SELECT * FROM \`${table}\`${where}${order} LIMIT :limit OFFSET :offset`,
-        { type: QueryTypes.SELECT, replacements: { limit: parseInt(limit, 10), offset: parseInt(offset, 10) } }
+        { type: QueryTypes.SELECT, replacements: { limit, offset } }
       );
       const [countRow] = await sequelize.query(
         `SELECT COUNT(*) as c FROM \`${table}\`${where}`,
@@ -152,7 +166,7 @@ const api = (table, cols, idCol = 'id') => ({
       );
       return res.json({ success: true, data: rows, total: countRow?.c ?? 0 });
     } catch (err) {
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
     }
   },
   get: async (req, res) => {
@@ -164,7 +178,7 @@ const api = (table, cols, idCol = 'id') => ({
       if (!row) return res.status(404).json({ success: false, error: 'Not found' });
       return res.json({ success: true, data: row });
     } catch (err) {
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
     }
   },
   create: async (req, res) => {
@@ -266,7 +280,7 @@ const api = (table, cols, idCol = 'id') => ({
       if (r.affectedRows === 0) return res.status(404).json({ success: false, error: 'Not found' });
       return res.json({ success: true, deleted: true });
     } catch (err) {
-      return res.status(500).json({ success: false, error: err.message });
+      return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
     }
   },
 });
@@ -589,7 +603,7 @@ async function productsListEnriched(req, res) {
     const data = rows.map((row) => shapeProductRow(row, catMap, tagMap));
     return res.json({ success: true, data, total: countRow?.c ?? 0 });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 }
 
@@ -607,7 +621,7 @@ async function productsGetEnriched(req, res) {
     const [catMap, tagMap] = await Promise.all([categoriesByProductIds([pid]), tagsByProductIds([pid])]);
     return res.json({ success: true, data: shapeProductRow(row, catMap, tagMap) });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 }
 
@@ -637,7 +651,7 @@ async function productsLookupBySku(req, res) {
     const [catMap, tagMap] = await Promise.all([categoriesByProductIds([pid]), tagsByProductIds([pid])]);
     return res.json({ success: true, data: shapeProductRow(row, catMap, tagMap) });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 }
 
@@ -693,7 +707,7 @@ router.get('/audit-logs', async (req, res) => {
     );
     return res.json({ success: true, data: rows, total: countRow?.c ?? 0 });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 

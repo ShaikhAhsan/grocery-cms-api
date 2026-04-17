@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const { sequelize } = require('../config/database');
 const { QueryTypes } = require('sequelize');
+const { publicApiErrorMessage } = require('../utils/publicApiErrorMessage');
 
 // GET /api/v1/menu/categories - categories with product counts
 router.get('/categories', async (req, res) => {
@@ -19,7 +20,7 @@ router.get('/categories', async (req, res) => {
     );
     res.json({ success: true, data: categories });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -52,7 +53,7 @@ router.get('/products', async (req, res) => {
     });
     res.json({ success: true, data: products });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -65,7 +66,7 @@ router.get('/brands', async (req, res) => {
     );
     res.json({ success: true, data: brands });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 
@@ -115,7 +116,7 @@ router.get('/full', async (req, res) => {
       brands: brands || [],
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 

@@ -28,7 +28,7 @@ router.get('/', async (req, res) => {
     }));
     successResponse(res, processed, 'Categories fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -55,7 +55,7 @@ router.get('/:id', async (req, res) => {
     };
     successResponse(res, category, 'Category fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -88,7 +88,7 @@ router.post('/upsert', async (req, res) => {
       successResponse(res, newCat[0], 'Category created successfully', 201);
     }
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -128,7 +128,7 @@ router.post('/:id/relationships', async (req, res) => {
     });
     successResponse(res, null, 'Category relationships updated successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -142,7 +142,7 @@ router.patch('/:id/status', async (req, res) => {
     );
     successResponse(res, null, 'Category status updated successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -156,7 +156,7 @@ router.patch('/:id/position', async (req, res) => {
     );
     successResponse(res, null, 'Category position updated successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -177,7 +177,7 @@ router.get('/search', async (req, res) => {
     const processed = categories.map((c) => ({ ...c, image: processImageUrl(c.image) }));
     successResponse(res, processed, 'Search results fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -200,7 +200,7 @@ router.get('/:parent_id/subcategories', async (req, res) => {
     const processed = subcategories.map((c) => ({ ...c, image: processImageUrl(c.image) }));
     successResponse(res, processed, 'Subcategories fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -223,7 +223,7 @@ router.get('/:category_id/parents', async (req, res) => {
     const processed = parents.map((c) => ({ ...c, image: processImageUrl(c.image) }));
     successResponse(res, processed, 'Parent categories fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -252,7 +252,7 @@ router.post('/relationships', async (req, res) => {
     );
     successResponse(res, null, 'Relationship added successfully', 201);
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -266,7 +266,7 @@ router.delete('/relationships', async (req, res) => {
     if (result?.affectedRows === 0) return errorResponse(res, 'Relationship not found', 404);
     successResponse(res, null, 'Relationship removed successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -289,7 +289,7 @@ router.post('/:categoryId/products', async (req, res) => {
     }
     successResponse(res, { inserted, ignored: products.length - inserted }, 'Products added successfully (duplicates ignored)');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -308,7 +308,7 @@ router.delete('/:categoryId/products', async (req, res) => {
     if (result?.affectedRows === 0) return errorResponse(res, 'No matching products found in category', 404);
     successResponse(res, { affectedRows: result.affectedRows }, 'Products removed from category');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 

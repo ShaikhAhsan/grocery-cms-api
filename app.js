@@ -22,6 +22,7 @@ const { sequelize } = require('./config/database');
 const { initializeFirebase, getFirebaseInstance } = require('./config/firebase');
 const { initializeFirebaseStorage, runStorageHealthCheck } = require('./services/googleCloudStorage');
 const errorHandler = require('./middleware/errorHandler');
+const { publicApiErrorMessage } = require('./utils/publicApiErrorMessage');
 const indexRoutes = require('./routes/index');
 const inventoryAuthRoutes = require('./routes/inventoryAuth');
 const authRoutes = require('./routes/auth');
@@ -90,7 +91,7 @@ app.get('/health', async (req, res) => {
     await sequelize.authenticate();
     checks.db = { ok: true, message: 'Connected successfully' };
   } catch (err) {
-    checks.db = { ok: false, message: err.message || 'Connection failed' };
+    checks.db = { ok: false, message: publicApiErrorMessage(err, 'Connection failed') };
   }
 
   try {

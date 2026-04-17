@@ -6,6 +6,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { sequelize } = require('../../config/database');
 const { QueryTypes } = require('sequelize');
+const { publicApiErrorMessage } = require('../../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -189,7 +190,7 @@ router.post('/upload-microservice', uploadMemory.single('image'), async (req, re
     }
     return res.status(502).json({
       success: false,
-      error: err.message || 'Upload proxy failed',
+      error: publicApiErrorMessage(err, 'Upload proxy failed'),
     });
   }
 });
@@ -242,7 +243,7 @@ router.patch('/products/:productId/images', async (req, res) => {
       },
     });
   } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: publicApiErrorMessage(err) });
   }
 });
 

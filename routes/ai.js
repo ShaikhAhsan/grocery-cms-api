@@ -5,6 +5,7 @@ const express = require('express');
 const fetch = require('node-fetch');
 const { sequelize } = require('../config/database');
 const { QueryTypes } = require('sequelize');
+const { publicApiErrorMessage } = require('../utils/publicApiErrorMessage');
 
 const router = express.Router();
 const API_KEY = process.env.GOOGLE_API_KEY;
@@ -41,7 +42,7 @@ router.post('/fix-product-name', async (req, res) => {
     const fixedName = await fixProductName(productName);
     res.json({ fixedName });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: publicApiErrorMessage(err) });
   }
 });
 
@@ -139,7 +140,7 @@ Only valid JSON, no extra text.`;
 
     res.json({ success: true, message: 'Products updated successfully', updated: updates });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: publicApiErrorMessage(err) });
   }
 });
 

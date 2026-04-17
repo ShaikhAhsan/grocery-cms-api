@@ -47,7 +47,7 @@ router.get('/', async (req, res) => {
 
     successResponse(res, { dashboard }, 'Product stats fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 

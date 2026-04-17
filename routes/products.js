@@ -7,6 +7,7 @@ const { sequelize } = require('../config/database');
 const { QueryTypes } = require('sequelize');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 const { processImageUrl } = require('../utils/helpers');
+const { publicApiErrorMessage } = require('../utils/publicApiErrorMessage');
 
 const router = express.Router();
 const requireSheenInventoryJwt = require('../middleware/requireSheenInventoryJwt');
@@ -141,7 +142,7 @@ async function handleProductList(req, res) {
       },
     }, 'Products fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 }
 
@@ -321,7 +322,7 @@ async function handleSyncProductsPhp(req, res) {
   } catch (err) {
     return res.status(200).json({
       success: false,
-      message: `Sync failed: ${err.message}`,
+      message: `Sync failed: ${publicApiErrorMessage(err)}`,
     });
   }
 }
@@ -374,7 +375,7 @@ router.patch('/:id', requireSheenInventoryJwt, async (req, res) => {
       data: { ...p, image: processImageUrl(p.image), thumb_image: processImageUrl(p.thumb_image) },
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: publicApiErrorMessage(err) });
   }
 });
 
@@ -408,7 +409,7 @@ router.get('/all', requireSheenInventoryJwt, async (req, res) => {
       offset,
     }, 'Products fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -428,7 +429,7 @@ router.get('/sku/:sku', async (req, res) => {
       thumb_image: processImageUrl(p.thumb_image),
     }, 'Product fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -445,7 +446,7 @@ router.post('/', async (req, res) => {
     const insRows = await sequelize.query('SELECT LAST_INSERT_ID() as id', { type: QueryTypes.SELECT });
     successResponse(res, { product_id: insRows[0]?.id }, 'Product created successfully', 201);
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -456,7 +457,7 @@ router.put('/:id/deactivate', async (req, res) => {
     });
     successResponse(res, null, 'Product deactivated successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -497,7 +498,7 @@ router.get('/category/:category_id', async (req, res) => {
       products: processed,
     }, 'Products fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -545,7 +546,7 @@ router.get('/search', async (req, res) => {
       products: processed,
     }, 'Search results fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -594,7 +595,7 @@ router.get('/sync_products/status', requireSheenInventoryJwt, async (req, res) =
   } catch (err) {
     res.status(500).json({
       success: false,
-      message: err.message || 'Failed to read sync status',
+      message: publicApiErrorMessage(err, 'Failed to read sync status'),
       last_sync: null,
       has_sync_history: false,
       server_has_newer_sync_than_client: false,
@@ -625,7 +626,7 @@ router.get('/:id', async (req, res, next) => {
       thumb_image: processImageUrl(p.thumb_image),
     }, 'Product fetched successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -664,7 +665,7 @@ router.post('/upsert', async (req, res) => {
       affected_rows: ar,
     }, ar === 1 ? 'Product created successfully' : ar === 2 ? 'Product updated successfully' : 'Product saved');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -696,7 +697,7 @@ router.post('/sync', async (req, res) => {
     }
     successResponse(res, null, 'Products synced successfully');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -730,7 +731,7 @@ router.post('/sync-parent-skus', async (req, res) => {
     }
     successResponse(res, null, 'Parent products updated successfully');
   } catch (err) {
-    errorResponse(res, err.message || 'An error occurred while syncing products.');
+    errorResponse(res, err);
   }
 });
 

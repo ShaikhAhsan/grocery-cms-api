@@ -7,6 +7,7 @@ const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
 const { getFirebaseInstance } = require('../config/firebase');
 const { parseIsCostPriceVisible } = require('../utils/parseIsCostPriceVisible');
+const { publicApiErrorMessage } = require('../utils/publicApiErrorMessage');
 
 const router = express.Router();
 
@@ -149,7 +150,7 @@ router.post('/session', async (req, res) => {
     return res.status(500).json({
       success: false,
       code: 'SERVER_ERROR',
-      message: err.message || 'Session failed',
+      message: publicApiErrorMessage(err, 'Session failed'),
     });
   }
 });

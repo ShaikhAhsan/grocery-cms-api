@@ -1,3 +1,5 @@
+const { publicApiErrorMessage } = require('./publicApiErrorMessage');
+
 module.exports = {
   successResponse: (res, data, message = 'Success', statusCode = 200) => {
     res.status(statusCode).json({
@@ -7,7 +9,12 @@ module.exports = {
       data,
     });
   },
-  errorResponse: (res, message = 'Something went wrong', statusCode = 500) => {
+  /** Pass an `Error` instance to return a safe message for DB/network failures; strings pass through unchanged. */
+  errorResponse: (res, messageOrErr = 'Something went wrong', statusCode = 500) => {
+    const message =
+      messageOrErr instanceof Error
+        ? publicApiErrorMessage(messageOrErr, 'Something went wrong')
+        : String(messageOrErr || 'Something went wrong');
     res.status(statusCode).json({
       statusCode,
       success: false,

@@ -72,7 +72,7 @@ router.get('/backup-products', async (req, res) => {
     }
     successResponse(res, null, 'Products backed up successfully.');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
@@ -104,7 +104,7 @@ router.get('/fetch-missing-images', async (req, res) => {
     }));
     successResponse(res, results, 'Image fetch process completed');
   } catch (err) {
-    errorResponse(res, err.message);
+    errorResponse(res, err);
   }
 });
 
