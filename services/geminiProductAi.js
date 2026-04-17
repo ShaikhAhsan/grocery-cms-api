@@ -33,8 +33,12 @@ const LISTING_IMAGE_PROMPT = `Using the attached product photo, produce a single
 Requirements:
 - Output must be suitable for a 512×512 pixel square frame (1:1 aspect ratio).
 - Pure white background (#FFFFFF) with soft, natural, even studio lighting; no harsh shadows and no visible reflections on the background.
-- **Composition — make the product large, not a small object in the middle:** scale and frame the product so it fills most of the square. Aim for about **15% of the frame width** as clear white margin on the **left** and **15% on the right**, and about **10% margin** at the **top** and **10% at the bottom**. The product should occupy the area between those margins (hero-style listing shot), still fully visible and not clipped.
-- Center the product in the frame but **prioritize filling the available area** between those margins — avoid excessive empty space that makes the pack look tiny.
+- **Composition — enforce consistent product size across items:** center the product and keep the longest visible product dimension at roughly **80% of the frame** (acceptable range: 78% to 82%). Do NOT make the product tiny and do NOT zoom so much that edges are cropped.
+- Keep approximate white margins near: left/right 10% each, top/bottom 10% each (small variation is okay as long as product size stays consistent).
+- If the first composition would result in a small product, zoom in before finalizing. If it would clip the product, zoom out slightly.
+- Retouch and clean the product surface: remove dust specks, dirt marks, wrinkles, creases, dents, scratches, smudges, and unwanted glare/reflections from plastic wrap or packaging.
+- Remove temporary labels/stickers/barcode price tags only when they are clearly non-brand temporary artifacts.
+- Keep the product geometry realistic while cleaning: no melted edges, no warped shape, no fake text, and no artificial over-smoothing.
 - Keep the product straight, sharp, and fully readable; do not crop important label text.
 - Preserve the original packaging design, colors, typography, and text as accurately as possible — do not redesign the brand or invent text.
 - Style: minimal, professional, catalog photography.
@@ -615,7 +619,7 @@ async function generateListingImage(imageBuffer, mimeType) {
     ],
     generationConfig: {
       responseModalities: ['TEXT', 'IMAGE'],
-      temperature: 0.4,
+      temperature: 0.25,
       imageConfig: {
         aspectRatio: '1:1',
       },
@@ -632,7 +636,7 @@ async function generateListingImage(imageBuffer, mimeType) {
         ...baseBody,
         generationConfig: {
           responseModalities: ['IMAGE'],
-          temperature: 0.4,
+          temperature: 0.25,
         },
       };
       const response = await geminiGenerateContent(IMAGE_MODEL, fallback);
